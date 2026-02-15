@@ -1,0 +1,73 @@
+# Active defaults used when a profile argument is not provided.
+active:
+  llm_profile: together_gpt-oss-120b_private
+  benchmark_profile: summarization_13000to600
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    api_style: responses
+
+  together:
+    base_url: https://api.together.xyz/v1
+    api_key_env: TOGETHER_API_KEY
+    api_style: chat_completions
+
+llm_profiles:
+  openai_fast:
+    provider: openai
+    model: gpt-5-nano
+
+  together_gpt-oss-20b_public:
+    provider: together
+    model: openai/gpt-oss-20b
+    reasoning_effort: high
+
+  together_gpt-oss-20b_private:
+    provider: together
+    model: kpirestani_0236/openai/gpt-oss-20b-398585b7
+    reasoning_effort: high
+
+  together_gpt-oss-120b_private:
+    provider: together
+    model: kpirestani_0236/openai/gpt-oss-120b-2fefaac0
+    reasoning_effort: high
+
+  # Template for arbitrary OpenAI-compatible endpoints.
+  custom_example:
+    provider: custom
+    base_url: https://your-endpoint.example/v1
+    api_key_env: YOUR_API_KEY_ENV
+    api_style: chat_completions
+    model: your/model-id
+
+benchmark_profiles:
+  summarization_13000to600:
+    disable_max_completion_tokens: true
+    # Uses active.llm_profile unless explicitly overridden elsewhere.
+
+    # Input dataset (JSONL). Sampling is done with replacement by default.
+    dataset_path: corpus/v1_summarization_13000to600.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    # Keep this quick but meaningful: ramp through selected concurrency levels and scale request volume by concurrency.
+    concurrency_levels: [60, 70, 80, 90, 100]
+    request_sizing:
+      mode: concurrency_scaled
+      # Requests per level = max(min_requests, concurrency * waves_per_level),
+      # optionally capped by max_requests.
+      waves_per_level: 8
+      min_requests: 16
+      max_requests: 256
+    progress_update_every: 3
+    request_timeout_s: 90
+
+    # Stop early when throughput plateaus/declines while tail latency spikes.
+    stop_on_saturation: true
+    min_levels_before_stop: 3
+    saturation:
+      throughput_plateau_pct: 0.03
+      throughput_decline_pct: 0.07
+      latency_spike_multiplier: 1.35

@@ -1,0 +1,36 @@
+provider:
+  name: openai
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+generation:
+  # Corpus size and shape
+  input_tokens: 13000
+  output_tokens: 600
+  records:    15
+  output_file: corpus/v1_summarization_13000to600.jsonl
+  default_tag: meeting_notes
+
+  # Throughput behavior
+  concurrency: 48
+  chunk_concurrency: 8
+  section_chunk_target: 2200
+  max_sections: 40
+
+  # Per-attempt quality control
+  max_attempts: 4
+  tolerance: 0.10
+  temperature: 1.0
+
+  # Runtime behavior
+  seed: null
+  timeout: 120.0
+  status_interval: 10.0
+
+  # Retry / backoff behavior
+  max_retries_per_record_multiplier: 4
+  rate_limit_trigger_count: 4
+  rate_limit_cooldown_seconds: 0.75
+  adaptive_ramp_waves: 1
+  growth_multiplier: 2.0
