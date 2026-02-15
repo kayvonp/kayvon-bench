@@ -1,0 +1,34 @@
+# Active profile used when --profile is not provided.
+active_profile: together_gpt-oss-20b_private
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    api_style: responses
+
+  together:
+    base_url: https://api.together.xyz/v1
+    api_key_env: TOGETHER_API_KEY
+    api_style: chat_completions
+
+profiles:
+  openai_fast:
+    provider: openai
+    model: gpt-5-nano
+
+  together_gpt-oss-20b_public:
+    provider: together
+    model: openai/gpt-oss-20b
+
+  together_gpt-oss-20b_private:
+    provider: together
+    model: kpirestani_0236/openai/gpt-oss-20b-398585b7
+
+  # Template for arbitrary OpenAI-compatible endpoints.
+  custom_example:
+    provider: custom
+    base_url: https://your-endpoint.example/v1
+    api_key_env: YOUR_API_KEY_ENV
+    api_style: chat_completions
+    model: your/model-id
