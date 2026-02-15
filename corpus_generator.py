@@ -360,6 +360,15 @@ def _synthesize_section(
     return section_no, content, measured, completion_tokens_total
 
 
+def _strict_summary_prompt(target_tokens: int) -> str:
+    return (
+        "Summarize the following text into EXACTLY "
+        f"{target_tokens} output tokens. Do not use more or fewer tokens.\n"
+        "Return only the summary text. No preamble, no headings, no labels, no signoff.\n"
+        "If you cannot hit the exact count, make the output as close as possible."
+    )
+
+
 def synthesize_meeting_notes(
     client: OpenAI,
     model: str,
@@ -459,12 +468,17 @@ def build_record(
     return {
         "id": record_id,
         "messages": [
-            {"role": "system", "content": "You are a concise assistant."},
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict summarization model. Obey the output-token budget exactly. "
+                    "Never add explanations or extras outside the requested summary."
+                ),
+            },
             {
                 "role": "user",
                 "content": (
-                    "Summarize the following text into a long-form response of roughly "
-                    f"{settings.output_tokens} tokens (about ±10%).\n\n"
+                    f"{_strict_summary_prompt(settings.output_tokens)}\n\n"
                     f"{generated_text}"
                 ),
             },

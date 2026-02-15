@@ -98,6 +98,79 @@ def extract_usage_tokens(response: Any) -> tuple[int, int, int]:
     return prompt_tokens, completion_tokens, total_tokens
 
 
+def extract_usage_detail_int(usage: Any, parent_attr: str, child_attr: str) -> int:
+    parent = getattr(usage, parent_attr, None)
+    if parent is None:
+        return 0
+    value = getattr(parent, child_attr, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def extract_response_text(response: Any, api_style: str) -> str:
+    if api_style == "chat_completions":
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                text = getattr(item, "text", None) if not isinstance(item, dict) else item.get("text")
+                if text:
+                    parts.append(str(text))
+            return "\n".join(parts)
+        return str(content or "")
+
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text:
+        return output_text
+
+    output = getattr(response, "output", None) or []
+    parts: list[str] = []
+    for item in output:
+        content = getattr(item, "content", None)
+        if content is None and isinstance(item, dict):
+            content = item.get("content")
+        if not content:
+            continue
+        for c in content:
+            c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
+            if c_type != "output_text":
+                continue
+            text = getattr(c, "text", None) if not isinstance(c, dict) else c.get("text")
+            if text:
+                parts.append(str(text))
+    return "\n".join(parts)
+
+
+def extract_reasoning_text(response: Any, api_style: str) -> str:
+    if api_style == "chat_completions":
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        reasoning = getattr(message, "reasoning", "")
+        if isinstance(reasoning, str):
+            return reasoning
+        if isinstance(reasoning, list):
+            return "\n".join(str(x) for x in reasoning)
+        return str(reasoning or "")
+    return ""
+
+
+def estimate_visible_tokens(text: str) -> int:
+    if not text:
+        return 0
+    # Simple tokenizer-free estimate that tracks BPE-ish sizes reasonably for diagnostics.
+    return max(1, round(len(text) / 4))
+
+
 def get_int_field(value: Any) -> int | None:
     if value is None:
         return None
@@ -304,6 +377,28 @@ def single_request(
                     response = client.chat.completions.create(**request_kwargs)
 
         prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(response)
+        usage = getattr(response, "usage", None)
+        reasoning_tokens = extract_usage_detail_int(usage, "completion_tokens_details", "reasoning_tokens")
+        if reasoning_tokens == 0:
+            reasoning_tokens = extract_usage_detail_int(usage, "output_tokens_details", "reasoning_tokens")
+        accepted_prediction_tokens = extract_usage_detail_int(
+            usage, "completion_tokens_details", "accepted_prediction_tokens"
+        )
+        rejected_prediction_tokens = extract_usage_detail_int(
+            usage, "completion_tokens_details", "rejected_prediction_tokens"
+        )
+        visible_text = extract_response_text(response, api_style)
+        reasoning_text = extract_reasoning_text(response, api_style)
+        visible_chars = len(visible_text)
+        visible_words = len(visible_text.split()) if visible_text else 0
+        visible_token_est = estimate_visible_tokens(visible_text)
+        reasoning_chars = len(reasoning_text)
+        reasoning_token_est = estimate_visible_tokens(reasoning_text)
+        finish_reason = ""
+        if api_style == "chat_completions":
+            choices = getattr(response, "choices", None) or []
+            if choices:
+                finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
         latency = time.perf_counter() - start
         req_output_tps = completion_tokens / latency if latency > 0 else 0.0
         return {
@@ -313,6 +408,17 @@ def single_request(
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
             "req_output_tps": req_output_tps,
+            "reasoning_tokens": reasoning_tokens,
+            "accepted_prediction_tokens": accepted_prediction_tokens,
+            "rejected_prediction_tokens": rejected_prediction_tokens,
+            "visible_chars": visible_chars,
+            "visible_words": visible_words,
+            "visible_token_est": visible_token_est,
+            "reasoning_chars": reasoning_chars,
+            "reasoning_token_est": reasoning_token_est,
+            "finish_reason": finish_reason,
+            "visible_preview": visible_text[:240].replace("\n", " "),
+            "reasoning_preview": reasoning_text[:240].replace("\n", " "),
         }
     except Exception as e:  # noqa: BLE001
         latency = time.perf_counter() - start
@@ -330,6 +436,11 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
     req_output_tps_values = [r["req_output_tps"] for r in successes]
     prompt_tokens = sum(int(r.get("prompt_tokens", 0)) for r in successes)
     completion_tokens = sum(int(r.get("completion_tokens", 0)) for r in successes)
+    reasoning_tokens = sum(int(r.get("reasoning_tokens", 0)) for r in successes)
+    visible_token_est = sum(int(r.get("visible_token_est", 0)) for r in successes)
+    visible_chars = sum(int(r.get("visible_chars", 0)) for r in successes)
+    reasoning_token_est = sum(int(r.get("reasoning_token_est", 0)) for r in successes)
+    reasoning_chars = sum(int(r.get("reasoning_chars", 0)) for r in successes)
     target_output_tokens = sum(int(r.get("target_output_tokens", 0) or 0) for r in successes)
     total_tokens = sum(int(r.get("total_tokens", 0)) for r in successes)
 
@@ -348,10 +459,17 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
         "requests_per_sec": (success_count / elapsed_s) if elapsed_s > 0 else 0.0,
         "input_tokens_per_sec": (prompt_tokens / elapsed_s) if elapsed_s > 0 else 0.0,
         "output_tokens_per_sec": (completion_tokens / elapsed_s) if elapsed_s > 0 else 0.0,
+        "reasoning_tokens_per_sec": (reasoning_tokens / elapsed_s) if elapsed_s > 0 else 0.0,
+        "visible_token_est_per_sec": (visible_token_est / elapsed_s) if elapsed_s > 0 else 0.0,
         "target_output_tokens": target_output_tokens,
         "avg_tokens_per_request": (total_tokens / success_count) if success_count else 0.0,
         "avg_prompt_tokens_per_request": (prompt_tokens / success_count) if success_count else 0.0,
         "avg_completion_tokens_per_request": (completion_tokens / success_count) if success_count else 0.0,
+        "avg_reasoning_tokens_per_request": (reasoning_tokens / success_count) if success_count else 0.0,
+        "avg_visible_token_est_per_request": (visible_token_est / success_count) if success_count else 0.0,
+        "avg_visible_chars_per_request": (visible_chars / success_count) if success_count else 0.0,
+        "avg_reasoning_token_est_per_request": (reasoning_token_est / success_count) if success_count else 0.0,
+        "avg_reasoning_chars_per_request": (reasoning_chars / success_count) if success_count else 0.0,
         "avg_req_output_tokens_per_sec": mean(req_output_tps_values) if req_output_tps_values else 0.0,
         "lat_p50": percentile(latencies, 0.50),
         "lat_p95": percentile(latencies, 0.95),
@@ -424,9 +542,16 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     stop_on_saturation = bool(profile.get("stop_on_saturation", True))
     min_levels_before_stop = int(profile.get("min_levels_before_stop", 3))
     sat_cfg = profile.get("saturation") or {}
+    diagnostic_mode = bool(profile.get("diagnostic_mode", config.get("diagnostic_mode", False)))
+    token_diagnostics = bool(profile.get("token_diagnostics", diagnostic_mode))
 
     if not concurrency_levels:
         raise SystemExit("concurrency_levels is empty.")
+
+    if diagnostic_mode:
+        concurrency_levels = [1]
+        progress_every = 1
+        stop_on_saturation = False
 
     api_key = os.getenv(llm["api_key_env"])
     if not api_key:
@@ -443,6 +568,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     print(f"API style: {llm['api_style']}")
     print(f"Dataset: {dataset_path} ({len(corpus)} records)")
     print(f"Concurrency ramp: {concurrency_levels}")
+    print(f"Diagnostic mode: {diagnostic_mode}")
     request_sizing = profile.get("request_sizing")
     if request_sizing:
         print(
@@ -457,7 +583,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     print("")
 
     for level_idx, concurrency in enumerate(concurrency_levels, start=1):
-        requests_for_level = compute_requests_for_level(concurrency, profile)
+        requests_for_level = 1 if diagnostic_mode else compute_requests_for_level(concurrency, profile)
         print(
             f"[Level {level_idx}/{len(concurrency_levels)}] "
             f"concurrency={concurrency}, requests={requests_for_level}"
@@ -474,7 +600,9 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             "avg_out/target",
         ]
         print_table(progress_headers, [], indent="  ")
-        if sample_with_replacement:
+        if diagnostic_mode:
+            samples = [corpus[0]]
+        elif sample_with_replacement:
             samples = [rng.choice(corpus) for _ in range(requests_for_level)]
         else:
             if requests_for_level > len(corpus):
@@ -569,6 +697,51 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
         )
         if metrics["error_examples"]:
             print(f"  sample_error: {metrics['error_examples'][0]}")
+        if token_diagnostics and results:
+            print("  token diagnostics:")
+            diag_headers = [
+                "idx",
+                "ok",
+                "finish",
+                "reported_out_tok",
+                "visible_tok_est",
+                "usage_reasoning_tok",
+                "reasoning_tok_est",
+                "visible_chars",
+                "reasoning_chars",
+                "lat_s",
+            ]
+            diag_rows: list[list[str]] = []
+            for idx, result in enumerate(results, start=1):
+                diag_rows.append(
+                    [
+                        str(idx),
+                        "Y" if result.get("ok") else "N",
+                        str(result.get("finish_reason", "")),
+                        str(int(result.get("completion_tokens", 0) or 0)),
+                        str(int(result.get("visible_token_est", 0) or 0)),
+                        str(int(result.get("reasoning_tokens", 0) or 0)),
+                        str(int(result.get("reasoning_token_est", 0) or 0)),
+                        str(int(result.get("visible_chars", 0) or 0)),
+                        str(int(result.get("reasoning_chars", 0) or 0)),
+                        f"{float(result.get('latency_s', 0.0)):.2f}",
+                    ]
+                )
+            print_table(diag_headers, diag_rows, indent="  ")
+            if metrics["successes"] > 0:
+                print(
+                    "  token diagnostics summary: "
+                    f"avg_reported_out={metrics['avg_completion_tokens_per_request']:.1f}, "
+                    f"avg_visible_est={metrics['avg_visible_token_est_per_request']:.1f}, "
+                    f"avg_usage_reasoning={metrics['avg_reasoning_tokens_per_request']:.1f}, "
+                    f"avg_reasoning_est={metrics['avg_reasoning_token_est_per_request']:.1f}, "
+                    f"avg_visible_chars={metrics['avg_visible_chars_per_request']:.1f}, "
+                    f"avg_reasoning_chars={metrics['avg_reasoning_chars_per_request']:.1f}"
+                )
+                preview = next((r for r in results if r.get("ok")), None)
+                if preview:
+                    print(f"  visible_preview: {preview.get('visible_preview', '')!r}")
+                    print(f"  reasoning_preview: {preview.get('reasoning_preview', '')!r}")
 
         saturated, reason = detect_saturation(history[:-1], metrics, sat_cfg)
         if saturated and stop_on_saturation and level_idx >= min_levels_before_stop:
