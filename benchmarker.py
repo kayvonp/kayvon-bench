@@ -195,6 +195,39 @@ def resolve_output_token_target(sample: dict[str, Any]) -> int | None:
     return None
 
 
+def resolve_max_output_tokens_policy(profile: dict[str, Any]) -> tuple[str, int | None]:
+    """Resolve max-output-token policy for a benchmark profile.
+
+    Modes:
+    - disabled: do not send any max token cap.
+    - from_corpus: use per-sample token target fields from dataset rows.
+    - fixed: always use max_output_tokens_fixed from profile.
+    """
+    mode_raw = profile.get("max_output_tokens_mode")
+    if mode_raw is None:
+        # Backward-compatible behavior.
+        disable_max_completion_tokens = bool(profile.get("disable_max_completion_tokens", False))
+        return ("disabled", None) if disable_max_completion_tokens else ("from_corpus", None)
+
+    mode = str(mode_raw).strip().lower()
+    valid_modes = {"disabled", "from_corpus", "fixed"}
+    if mode not in valid_modes:
+        raise SystemExit(
+            f"Unsupported max_output_tokens_mode: {mode!r}. "
+            f"Expected one of: {', '.join(sorted(valid_modes))}."
+        )
+
+    if mode == "fixed":
+        fixed_value = get_int_field(profile.get("max_output_tokens_fixed"))
+        if fixed_value is None:
+            raise SystemExit(
+                "max_output_tokens_mode='fixed' requires a positive integer max_output_tokens_fixed."
+            )
+        return mode, fixed_value
+
+    return mode, None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run quick LLM endpoint saturation benchmark.")
     parser.add_argument(
@@ -323,7 +356,6 @@ def single_request(
     sample: dict[str, Any],
     output_tokens: int | None,
     timeout_s: float,
-    disable_max_completion_tokens: bool = False,
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
@@ -343,7 +375,7 @@ def single_request(
         if reasoning_effort:
             request_kwargs["reasoning_effort"] = reasoning_effort
 
-        if output_tokens is not None and not disable_max_completion_tokens:
+        if output_tokens is not None:
             if api_style == "responses":
                 request_kwargs["max_output_tokens"] = output_tokens
                 try:
@@ -538,7 +570,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     concurrency_levels = [int(x) for x in profile.get("concurrency_levels", [1, 2, 4])]
     progress_every = int(profile.get("progress_update_every", 2))
     timeout_s = float(profile.get("request_timeout_s", 120))
-    disable_max_completion_tokens = bool(profile.get("disable_max_completion_tokens", False))
+    max_output_tokens_mode, max_output_tokens_fixed = resolve_max_output_tokens_policy(profile)
     stop_on_saturation = bool(profile.get("stop_on_saturation", True))
     min_levels_before_stop = int(profile.get("min_levels_before_stop", 3))
     sat_cfg = profile.get("saturation") or {}
@@ -569,6 +601,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     print(f"Dataset: {dataset_path} ({len(corpus)} records)")
     print(f"Concurrency ramp: {concurrency_levels}")
     print(f"Diagnostic mode: {diagnostic_mode}")
+    if max_output_tokens_mode == "fixed":
+        print(f"Max output tokens: mode=fixed, value={max_output_tokens_fixed}")
+    else:
+        print(f"Max output tokens: mode={max_output_tokens_mode}")
     request_sizing = profile.get("request_sizing")
     if request_sizing:
         print(
@@ -615,7 +651,12 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = {}
             for sample in samples:
-                sample_target = resolve_output_token_target(sample)
+                if max_output_tokens_mode == "disabled":
+                    sample_target = None
+                elif max_output_tokens_mode == "fixed":
+                    sample_target = max_output_tokens_fixed
+                else:
+                    sample_target = resolve_output_token_target(sample)
                 fut = executor.submit(
                     single_request,
                     client,
@@ -624,7 +665,6 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     sample,
                     sample_target,
                     timeout_s,
-                    disable_max_completion_tokens,
                     llm.get("reasoning_effort"),
                 )
                 futures[fut] = sample_target
