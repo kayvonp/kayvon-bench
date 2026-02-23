@@ -2,8 +2,10 @@ import argparse
 import json
 import os
 import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -13,6 +15,10 @@ from openai import OpenAI
 
 
 DEFAULT_CONFIG_PATH = "benchmarker_config.yaml"
+DEFAULT_SUMMARY_SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/1RTTeX6_jh_GVz0FN6yfhEfbx36Gy-OkgEigy6EMMXgQ/edit?usp=sharing"
+)
+DEFAULT_SUMMARY_WORKSHEET = "Summary"
 DEFAULT_PROVIDERS = {
     "openai": {
         "base_url": "https://api.openai.com/v1",
@@ -242,6 +248,127 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_spreadsheet_id(url_or_id: str) -> str:
+    raw = (url_or_id or "").strip()
+    if not raw:
+        raise ValueError("Spreadsheet URL/ID is empty.")
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", raw)
+    if match:
+        return match.group(1)
+    return raw
+
+
+def load_google_service_account_info() -> dict[str, Any] | None:
+    raw = (os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("{"):
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    path = Path(raw).expanduser()
+    if not path.exists():
+        return None
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    return parsed if isinstance(parsed, dict) else None
+
+
+def append_summary_to_google_sheet(
+    history: list[dict[str, Any]],
+    benchmark_profile_name: str,
+    llm: dict[str, str],
+) -> None:
+    if not history:
+        return
+
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except Exception as exc:  # noqa: BLE001
+        print(f"Google Sheets export skipped: missing dependency ({exc}).")
+        return
+
+    sa_info = load_google_service_account_info()
+    if not sa_info:
+        print("Google Sheets export skipped: GOOGLE_SERVICE_ACCOUNT_JSON is missing/invalid.")
+        return
+
+    sheet_target = os.getenv("GOOGLE_SHEET_URL", DEFAULT_SUMMARY_SHEET_URL)
+    worksheet_name = os.getenv("GOOGLE_SHEET_WORKSHEET", DEFAULT_SUMMARY_WORKSHEET)
+    spreadsheet_id = parse_spreadsheet_id(sheet_target)
+
+    headers = [
+        "timestamp_utc",
+        "benchmark_profile",
+        "llm_profile",
+        "provider",
+        "model",
+        "concurrency",
+        "attempt/s",
+        "req/s",
+        "out_tok/s",
+        "req_out_tok/s_p50",
+        "req_out_tok/s_p95",
+        "lat_p50_s",
+        "lat_p95_s",
+        "avg_input_tok",
+        "avg_visible_out_tok_est",
+        "avg_thinking_tok_est",
+        "avg_total_out_tok_est",
+        "avg_total_out_tok_usage",
+        "success_rate",
+    ]
+
+    rows: list[list[str]] = []
+    timestamp_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for item in history:
+        rows.append(
+            [
+                timestamp_utc,
+                benchmark_profile_name,
+                llm["profile_name"],
+                llm["provider_name"],
+                llm["model"],
+                str(item["concurrency"]),
+                f"{item['attempts_per_sec']:.2f}",
+                f"{item['requests_per_sec']:.2f}",
+                f"{item['output_tokens_per_sec']:.1f}",
+                f"{item['req_output_tps_p50']:.1f}",
+                f"{item['req_output_tps_p95']:.1f}",
+                f"{item['lat_p50']:.2f}",
+                f"{item['lat_p95']:.2f}",
+                f"{item['avg_prompt_tokens_per_request']:.1f}",
+                f"{item['avg_visible_output_tokens_est_per_request']:.1f}",
+                f"{item['avg_thinking_tokens_est_per_request']:.1f}",
+                f"{item['avg_total_output_tokens_est_per_request']:.1f}",
+                f"{item['avg_usage_total_out_tokens_per_request']:.1f}",
+                f"{item['success_rate'] * 100:.1f}%",
+            ]
+        )
+
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(headers) + 4)
+
+        existing_header = worksheet.row_values(1)
+        if not existing_header:
+            worksheet.update(values=[headers], range_name="A1")
+        worksheet.append_rows(rows, value_input_option="RAW")
+        print(
+            f"Google Sheets export: appended {len(rows)} row(s) "
+            f"to '{worksheet_name}' in spreadsheet {spreadsheet_id}."
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Google Sheets export failed: {exc}")
+
+
 def compute_requests_for_level(concurrency: int, profile: dict[str, Any]) -> int:
     request_sizing = profile.get("request_sizing")
     if request_sizing:
@@ -349,6 +476,24 @@ def build_responses_input(sample: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def extract_system_user_prompts(sample: dict[str, Any]) -> tuple[str, str]:
+    raw_messages = sample.get("messages") or []
+    system_parts: list[str] = []
+    user_parts: list[str] = []
+    for msg in raw_messages:
+        role = str(msg.get("role", ""))
+        content = str(msg.get("content", ""))
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+        elif role == "user":
+            user_parts.append(content)
+    if not raw_messages:
+        return "", str(sample)
+    return "\n\n".join(system_parts), "\n\n".join(user_parts)
+
+
 def single_request(
     client: OpenAI,
     model: str,
@@ -357,6 +502,7 @@ def single_request(
     output_tokens: int | None,
     timeout_s: float,
     reasoning_effort: str | None = None,
+    include_full_text: bool = False,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     try:
@@ -433,7 +579,7 @@ def single_request(
                 finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
         latency = time.perf_counter() - start
         req_output_tps = completion_tokens / latency if latency > 0 else 0.0
-        return {
+        result = {
             "ok": True,
             "latency_s": latency,
             "prompt_tokens": prompt_tokens,
@@ -452,6 +598,10 @@ def single_request(
             "visible_preview": visible_text[:240].replace("\n", " "),
             "reasoning_preview": reasoning_text[:240].replace("\n", " "),
         }
+        if include_full_text:
+            result["visible_text"] = visible_text
+            result["reasoning_text"] = reasoning_text
+        return result
     except Exception as e:  # noqa: BLE001
         latency = time.perf_counter() - start
         return {
@@ -502,6 +652,16 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
         "avg_visible_chars_per_request": (visible_chars / success_count) if success_count else 0.0,
         "avg_reasoning_token_est_per_request": (reasoning_token_est / success_count) if success_count else 0.0,
         "avg_reasoning_chars_per_request": (reasoning_chars / success_count) if success_count else 0.0,
+        # Output-token views:
+        # - usage_total_out: provider-reported completion tokens.
+        # - visible_est/thinking_est: text-length-based estimates from visible/reasoning text.
+        # - total_est_out: visible_est + thinking_est.
+        "avg_usage_total_out_tokens_per_request": (completion_tokens / success_count) if success_count else 0.0,
+        "avg_visible_output_tokens_est_per_request": (visible_token_est / success_count) if success_count else 0.0,
+        "avg_thinking_tokens_est_per_request": (reasoning_token_est / success_count) if success_count else 0.0,
+        "avg_total_output_tokens_est_per_request": (
+            (visible_token_est + reasoning_token_est) / success_count
+        ) if success_count else 0.0,
         "avg_req_output_tokens_per_sec": mean(req_output_tps_values) if req_output_tps_values else 0.0,
         "lat_p50": percentile(latencies, 0.50),
         "lat_p95": percentile(latencies, 0.95),
@@ -666,6 +826,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     sample_target,
                     timeout_s,
                     llm.get("reasoning_effort"),
+                    diagnostic_mode,
                 )
                 futures[fut] = sample_target
 
@@ -716,6 +877,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 "req/s",
                 "out_tok/s",
                 "req_out_tok/s(avg/p50/p95)",
+                "avg_tok(vis/thk/total_est)",
                 "lat_p50_s",
                 "lat_p95_s",
                 "success",
@@ -728,6 +890,11 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     f"{metrics['avg_req_output_tokens_per_sec']:.1f}/"
                     f"{metrics['req_output_tps_p50']:.1f}/"
                     f"{metrics['req_output_tps_p95']:.1f}"
+                ),
+                (
+                    f"{metrics['avg_visible_output_tokens_est_per_request']:.1f}/"
+                    f"{metrics['avg_thinking_tokens_est_per_request']:.1f}/"
+                    f"{metrics['avg_total_output_tokens_est_per_request']:.1f}"
                 ),
                 f"{metrics['lat_p50']:.2f}",
                 f"{metrics['lat_p95']:.2f}",
@@ -771,10 +938,11 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             if metrics["successes"] > 0:
                 print(
                     "  token diagnostics summary: "
-                    f"avg_reported_out={metrics['avg_completion_tokens_per_request']:.1f}, "
-                    f"avg_visible_est={metrics['avg_visible_token_est_per_request']:.1f}, "
+                    f"avg_usage_total_out={metrics['avg_usage_total_out_tokens_per_request']:.1f}, "
+                    f"avg_visible_out_est={metrics['avg_visible_output_tokens_est_per_request']:.1f}, "
                     f"avg_usage_reasoning={metrics['avg_reasoning_tokens_per_request']:.1f}, "
-                    f"avg_reasoning_est={metrics['avg_reasoning_token_est_per_request']:.1f}, "
+                    f"avg_thinking_est={metrics['avg_thinking_tokens_est_per_request']:.1f}, "
+                    f"avg_total_out_est={metrics['avg_total_output_tokens_est_per_request']:.1f}, "
                     f"avg_visible_chars={metrics['avg_visible_chars_per_request']:.1f}, "
                     f"avg_reasoning_chars={metrics['avg_reasoning_chars_per_request']:.1f}"
                 )
@@ -782,6 +950,45 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 if preview:
                     print(f"  visible_preview: {preview.get('visible_preview', '')!r}")
                     print(f"  reasoning_preview: {preview.get('reasoning_preview', '')!r}")
+        if diagnostic_mode and results:
+            first_sample = samples[0] if samples else {}
+            system_prompt, user_prompt = extract_system_user_prompts(first_sample)
+            first_result = results[0]
+            visible_text = str(first_result.get("visible_text", ""))
+            reasoning_text = str(first_result.get("reasoning_text", ""))
+            error_text = str(first_result.get("error", "")) if not first_result.get("ok") else ""
+
+            capture_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            output_dir = Path("output")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            prompts_path = output_dir / f"diagnostic_{capture_ts}_prompts.txt"
+            thinking_path = output_dir / f"diagnostic_{capture_ts}_thinking_trace.txt"
+            response_path = output_dir / f"diagnostic_{capture_ts}_visible_response.txt"
+
+            with prompts_path.open("w", encoding="utf-8") as handle:
+                handle.write("=== SYSTEM PROMPT ===\n")
+                handle.write(system_prompt)
+                handle.write("\n\n=== USER PROMPT ===\n")
+                handle.write(user_prompt)
+                handle.write("\n")
+
+            with thinking_path.open("w", encoding="utf-8") as handle:
+                handle.write(reasoning_text)
+                if error_text:
+                    handle.write("\n\n=== ERROR ===\n")
+                    handle.write(error_text)
+                handle.write("\n")
+
+            with response_path.open("w", encoding="utf-8") as handle:
+                handle.write(visible_text)
+                if error_text:
+                    handle.write("\n\n=== ERROR ===\n")
+                    handle.write(error_text)
+                handle.write("\n")
+
+            print(f"  diagnostic_prompts_file: {prompts_path}")
+            print(f"  diagnostic_thinking_file: {thinking_path}")
+            print(f"  diagnostic_response_file: {response_path}")
 
         saturated, reason = detect_saturation(history[:-1], metrics, sat_cfg)
         if saturated and stop_on_saturation and level_idx >= min_levels_before_stop:
@@ -804,7 +1011,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 f"{item['lat_p50']:.2f}",
                 f"{item['lat_p95']:.2f}",
                 f"{item['avg_prompt_tokens_per_request']:.1f}",
-                f"{item['avg_completion_tokens_per_request']:.1f}",
+                f"{item['avg_visible_output_tokens_est_per_request']:.1f}",
+                f"{item['avg_thinking_tokens_est_per_request']:.1f}",
+                f"{item['avg_total_output_tokens_est_per_request']:.1f}",
+                f"{item['avg_usage_total_out_tokens_per_request']:.1f}",
                 f"{item['success_rate'] * 100:.1f}%",
             ]
         )
@@ -819,7 +1029,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             "lat_p50_s",
             "lat_p95_s",
             "avg_input_tok",
-            "avg_output_tok",
+            "avg_visible_out_tok_est",
+            "avg_thinking_tok_est",
+            "avg_total_out_tok_est",
+            "avg_total_out_tok_usage",
             "success_rate",
         ],
         summary_rows,
@@ -833,6 +1046,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             f"out_tok/s={best['output_tokens_per_sec']:.1f}, "
             f"lat_p95={best['lat_p95']:.2f}s"
         )
+    append_summary_to_google_sheet(history, benchmark_profile_name, llm)
 
 
 def main() -> None:

@@ -46,3 +46,17 @@ For pull requests:
 - Never commit secrets. Use `.env` files locally and provide `.env.example`.
 - Keep dependencies minimal and pinned where possible.
 - Review external inputs and fail safely with clear error messages.
+
+## Benchmarker Operational Notes
+- Use external virtualenvs for this repo (it is in iCloud): preferred interpreter is `/Users/kpirestani/.venvs/kayvon-bench/bin/python`.
+- `benchmarker.py` supports `max_output_tokens_mode` in benchmark profiles:
+  - `fixed` with `max_output_tokens_fixed`
+  - `from_corpus`
+  - `disabled`
+- In `diagnostic_mode: true`, benchmarker writes three files under `output/` on every run:
+  - `diagnostic_<ts>_prompts.txt` (system + user prompt)
+  - `diagnostic_<ts>_thinking_trace.txt` (full reasoning text)
+  - `diagnostic_<ts>_visible_response.txt` (full visible response)
+- Final ramp summary rows are appended to Google Sheets worksheet `Summary` in spreadsheet `1RTTeX6_jh_GVz0FN6yfhEfbx36Gy-OkgEigy6EMMXgQ`.
+  - Credentials are loaded from `GOOGLE_SERVICE_ACCOUNT_JSON` in `.env` (JSON blob or path to JSON file).
+  - Optional overrides: `GOOGLE_SHEET_URL`, `GOOGLE_SHEET_WORKSHEET`.

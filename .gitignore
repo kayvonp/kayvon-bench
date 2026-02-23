@@ -10,3 +10,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.db
+output/
+logs/diagnostic_capture_*.txt
