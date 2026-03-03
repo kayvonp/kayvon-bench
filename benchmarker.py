@@ -201,6 +201,22 @@ def resolve_output_token_target(sample: dict[str, Any]) -> int | None:
     return None
 
 
+def resolve_sample_input_token_estimates(sample: dict[str, Any]) -> tuple[int, int, int]:
+    total_input_tokens = (
+        get_int_field(sample.get("prompt_tokens_estimate"))
+        or get_int_field(sample.get("input_len_est"))
+        or 0
+    )
+    system_tokens = get_int_field(sample.get("system_tokens_estimate")) or 0
+    user_prompt_tokens = get_int_field(sample.get("user_tokens_estimate"))
+    if user_prompt_tokens is None:
+        if total_input_tokens > 0 and system_tokens > 0:
+            user_prompt_tokens = max(0, total_input_tokens - system_tokens)
+        else:
+            user_prompt_tokens = 0
+    return system_tokens, user_prompt_tokens, total_input_tokens
+
+
 def resolve_max_output_tokens_policy(profile: dict[str, Any]) -> tuple[str, int | None]:
     """Resolve max-output-token policy for a benchmark profile.
 
@@ -305,6 +321,7 @@ def append_summary_to_google_sheet(
         "provider",
         "model",
         "concurrency",
+        "samples",
         "attempt/s",
         "req/s",
         "out_tok/s",
@@ -312,10 +329,11 @@ def append_summary_to_google_sheet(
         "req_out_tok/s_p95",
         "lat_p50_s",
         "lat_p95_s",
-        "avg_input_tok",
+        "avg_input_tok_total",
+        "avg_system_tok_est",
+        "avg_user_prompt_tok_est",
         "avg_visible_out_tok_est",
         "avg_thinking_tok_est",
-        "avg_total_out_tok_est",
         "avg_total_out_tok_usage",
         "success_rate",
     ]
@@ -331,6 +349,7 @@ def append_summary_to_google_sheet(
                 llm["provider_name"],
                 llm["model"],
                 str(item["concurrency"]),
+                str(item["completed"]),
                 f"{item['attempts_per_sec']:.2f}",
                 f"{item['requests_per_sec']:.2f}",
                 f"{item['output_tokens_per_sec']:.1f}",
@@ -338,10 +357,11 @@ def append_summary_to_google_sheet(
                 f"{item['req_output_tps_p95']:.1f}",
                 f"{item['lat_p50']:.2f}",
                 f"{item['lat_p95']:.2f}",
-                f"{item['avg_prompt_tokens_per_request']:.1f}",
+                f"{item['avg_total_input_tokens_per_request']:.1f}",
+                f"{item['avg_system_tokens_est_per_request']:.1f}",
+                f"{item['avg_user_prompt_tokens_est_per_request']:.1f}",
                 f"{item['avg_visible_output_tokens_est_per_request']:.1f}",
                 f"{item['avg_thinking_tokens_est_per_request']:.1f}",
-                f"{item['avg_total_output_tokens_est_per_request']:.1f}",
                 f"{item['avg_usage_total_out_tokens_per_request']:.1f}",
                 f"{item['success_rate'] * 100:.1f}%",
             ]
@@ -360,6 +380,23 @@ def append_summary_to_google_sheet(
         existing_header = worksheet.row_values(1)
         if not existing_header:
             worksheet.update(values=[headers], range_name="A1")
+        else:
+            # Backward-compat: if user inserted a blank column between
+            # "concurrency" and "attempt/s", label it as "samples".
+            try:
+                concurrency_idx = existing_header.index("concurrency")
+                samples_idx = concurrency_idx + 1
+                attempt_idx = concurrency_idx + 2
+                if (
+                    attempt_idx < len(existing_header)
+                    and existing_header[samples_idx] == ""
+                    and existing_header[attempt_idx] == "attempt/s"
+                ):
+                    worksheet.update_cell(1, samples_idx + 1, "samples")
+            except ValueError:
+                pass
+            if existing_header != headers:
+                worksheet.update(values=[headers], range_name="A1")
         worksheet.append_rows(rows, value_input_option="RAW")
         print(
             f"Google Sheets export: appended {len(rows)} row(s) "
@@ -625,6 +662,8 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
     reasoning_chars = sum(int(r.get("reasoning_chars", 0)) for r in successes)
     target_output_tokens = sum(int(r.get("target_output_tokens", 0) or 0) for r in successes)
     total_tokens = sum(int(r.get("total_tokens", 0)) for r in successes)
+    system_input_tokens_est = sum(int(r.get("system_input_tokens_est", 0) or 0) for r in successes)
+    user_prompt_tokens_est = sum(int(r.get("user_prompt_tokens_est", 0) or 0) for r in successes)
 
     completed = len(results)
     success_count = len(successes)
@@ -646,6 +685,9 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
         "target_output_tokens": target_output_tokens,
         "avg_tokens_per_request": (total_tokens / success_count) if success_count else 0.0,
         "avg_prompt_tokens_per_request": (prompt_tokens / success_count) if success_count else 0.0,
+        "avg_total_input_tokens_per_request": (prompt_tokens / success_count) if success_count else 0.0,
+        "avg_system_tokens_est_per_request": (system_input_tokens_est / success_count) if success_count else 0.0,
+        "avg_user_prompt_tokens_est_per_request": (user_prompt_tokens_est / success_count) if success_count else 0.0,
         "avg_completion_tokens_per_request": (completion_tokens / success_count) if success_count else 0.0,
         "avg_reasoning_tokens_per_request": (reasoning_tokens / success_count) if success_count else 0.0,
         "avg_visible_token_est_per_request": (visible_token_est / success_count) if success_count else 0.0,
@@ -809,7 +851,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
         results: list[dict[str, Any]] = []
 
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = {}
+            futures: dict[Any, dict[str, int | None]] = {}
             for sample in samples:
                 if max_output_tokens_mode == "disabled":
                     sample_target = None
@@ -817,6 +859,9 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     sample_target = max_output_tokens_fixed
                 else:
                     sample_target = resolve_output_token_target(sample)
+                sample_system_tokens_est, sample_user_prompt_tokens_est, sample_total_input_tokens_est = (
+                    resolve_sample_input_token_estimates(sample)
+                )
                 fut = executor.submit(
                     single_request,
                     client,
@@ -828,14 +873,24 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     llm.get("reasoning_effort"),
                     diagnostic_mode,
                 )
-                futures[fut] = sample_target
+                futures[fut] = {
+                    "target_output_tokens": sample_target,
+                    "system_input_tokens_est": sample_system_tokens_est,
+                    "user_prompt_tokens_est": sample_user_prompt_tokens_est,
+                    "total_input_tokens_est": sample_total_input_tokens_est,
+                }
 
             for i, future in enumerate(as_completed(futures), start=1):
                 result = future.result()
                 results.append(result)
-                result_target = futures[future]
+                meta = futures[future]
+                result_target = meta.get("target_output_tokens")
                 if result.get("ok") and result_target:
                     result["target_output_tokens"] = result_target
+                if result.get("ok"):
+                    result["system_input_tokens_est"] = int(meta.get("system_input_tokens_est") or 0)
+                    result["user_prompt_tokens_est"] = int(meta.get("user_prompt_tokens_est") or 0)
+                    result["total_input_tokens_est"] = int(meta.get("total_input_tokens_est") or 0)
 
                 if i % progress_every == 0 or i == requests_for_level:
                     elapsed = time.perf_counter() - start_level
@@ -1010,10 +1065,11 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 f"{item['req_output_tps_p95']:.1f}",
                 f"{item['lat_p50']:.2f}",
                 f"{item['lat_p95']:.2f}",
-                f"{item['avg_prompt_tokens_per_request']:.1f}",
+                f"{item['avg_total_input_tokens_per_request']:.1f}",
+                f"{item['avg_system_tokens_est_per_request']:.1f}",
+                f"{item['avg_user_prompt_tokens_est_per_request']:.1f}",
                 f"{item['avg_visible_output_tokens_est_per_request']:.1f}",
                 f"{item['avg_thinking_tokens_est_per_request']:.1f}",
-                f"{item['avg_total_output_tokens_est_per_request']:.1f}",
                 f"{item['avg_usage_total_out_tokens_per_request']:.1f}",
                 f"{item['success_rate'] * 100:.1f}%",
             ]
@@ -1028,10 +1084,11 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             "req_out_tok/s_p95",
             "lat_p50_s",
             "lat_p95_s",
-            "avg_input_tok",
+            "avg_input_tok_total",
+            "avg_system_tok_est",
+            "avg_user_prompt_tok_est",
             "avg_visible_out_tok_est",
             "avg_thinking_tok_est",
-            "avg_total_out_tok_est",
             "avg_total_out_tok_usage",
             "success_rate",
         ],

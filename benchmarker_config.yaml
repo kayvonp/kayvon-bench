@@ -1,7 +1,7 @@
 # Active defaults used when a profile argument is not provided.
 active:
-  llm_profile: together_qwen3_235b_thinking_private_no_spec_4xH200
-  benchmark_profile: summarization_20000to2500_non_strict
+  llm_profile: together_gpt-oss-20b_public
+  benchmark_profile: summarization_13000to600_quick
 
 providers:
   openai:
@@ -24,6 +24,31 @@ llm_profiles:
     model: openai/gpt-oss-20b
     reasoning_effort: high
 
+  together_gpt-oss-20b_dedicated_1xh100_no_reasoning:
+    provider: together
+    model: together_sso/openai/gpt-oss-20b-f0386028
+    reasoning_effort: low
+
+  together_gpt-oss-20b_dedicated_1xh100_low:
+    provider: together
+    model: together_sso/openai/gpt-oss-20b-f0386028
+    reasoning_effort: low
+
+  together_gpt-oss-20b_dedicated_2xh100_no_reasoning:
+    provider: together
+    model: together_sso/openai/gpt-oss-20b-05bdd42d
+    reasoning_effort: low
+
+  together_gpt-oss-20b_dedicated_2xh100_low:
+    provider: together
+    model: together_sso/openai/gpt-oss-20b-05bdd42d
+    reasoning_effort: low
+
+  together_gpt-oss-20b_dedicated_airwallex_1xh100:
+    provider: together
+    model: together_sso/openai/gpt-oss-20b-61f70b7f
+    reasoning_effort: low
+
   together_gpt-oss-20b_private:
     provider: together
     model: kpirestani_0236/openai/gpt-oss-20b-398585b7
@@ -43,6 +68,92 @@ llm_profiles:
     model: together_sso/Qwen/Qwen3.5-397B-A17B-FP8-e2314544
 
 benchmark_profiles:
+  summarization_4000to100_non_strict_smoke_dedicated_1xh100_low:
+    diagnostic_mode: false
+    llm_profile: together_gpt-oss-20b_dedicated_1xh100_low
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 300
+
+    dataset_path: corpus/v1_summarization_4000to100_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    concurrency_levels: [2, 3, 4]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 8
+      min_requests: 8
+      max_requests: 128
+    progress_update_every: 1
+    request_timeout_s: 90
+    stop_on_saturation: false
+
+  summarization_4000to100_non_strict_smoke_dedicated_2xh100_low:
+    diagnostic_mode: false
+    llm_profile: together_gpt-oss-20b_dedicated_2xh100_low
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 300
+
+    dataset_path: corpus/v1_summarization_4000to100_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    concurrency_levels: [2, 3, 4]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 8
+      min_requests: 8
+      max_requests: 128
+    progress_update_every: 1
+    request_timeout_s: 90
+    stop_on_saturation: false
+
+  summarization_4000to100_non_strict_smoke_dedicated:
+    diagnostic_mode: false
+    llm_profile: together_gpt-oss-20b_dedicated_1xh100_no_reasoning
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 300
+
+    # Input dataset (JSONL). Sampling is done with replacement by default.
+    dataset_path: corpus/v1_summarization_4000to100_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    # Very quick smoke test.
+    concurrency_levels: [2, 4, 8, 16]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 4
+      min_requests: 4
+      max_requests: 128
+    progress_update_every: 1
+    request_timeout_s: 90
+    stop_on_saturation: false
+
+  summarization_13000to600_quick:
+    diagnostic_mode: false
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    # Uses active.llm_profile unless explicitly overridden elsewhere.
+
+    # Input dataset (JSONL). Sampling is done with replacement by default.
+    dataset_path: corpus/v1_summarization_13000to600.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    # Fast smoke benchmark: 2 light ramp levels with a small request budget.
+    concurrency_levels: [1, 2]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 2
+      min_requests: 4
+      max_requests: 6
+    progress_update_every: 1
+    request_timeout_s: 90
+
+    # For this quick profile, always run both levels.
+    stop_on_saturation: false
+
   summarization_13000to600:
     diagnostic_mode: false
     max_output_tokens_mode: fixed
@@ -104,3 +215,43 @@ benchmark_profiles:
       throughput_plateau_pct: 0.03
       throughput_decline_pct: 0.07
       latency_spike_multiplier: 1.35
+
+  airwallex_guardrail_5300to100_dedicated:
+    diagnostic_mode: false
+    llm_profile: together_gpt-oss-20b_dedicated_airwallex_1xh100
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 100
+
+    dataset_path: corpus/v1_airwallex_guardrail_5300in_100.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    concurrency_levels: [1, 2, 3, 4]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 8
+      min_requests: 8
+      max_requests: 64
+    progress_update_every: 1
+    request_timeout_s: 90
+    stop_on_saturation: false
+
+  airwallex_guardrail_5300to100_dedicated_definitive:
+    diagnostic_mode: false
+    llm_profile: together_gpt-oss-20b_dedicated_airwallex_1xh100
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 100
+
+    dataset_path: corpus/v1_airwallex_guardrail_5300in_100.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+
+    concurrency_levels: [1, 2, 3, 4]
+    request_sizing:
+      mode: concurrency_scaled
+      waves_per_level: 32
+      min_requests: 64
+      max_requests: 64
+    progress_update_every: 4
+    request_timeout_s: 120
+    stop_on_saturation: false

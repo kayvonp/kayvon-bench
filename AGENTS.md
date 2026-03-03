@@ -53,6 +53,14 @@ For pull requests:
   - `fixed` with `max_output_tokens_fixed`
   - `from_corpus`
   - `disabled`
+- Airwallex dedicated endpoint profile names:
+  - `together_gpt-oss-20b_dedicated_airwallex_1xh100` (model: `together_sso/openai/gpt-oss-20b-61f70b7f`)
+  - benchmark profiles: `airwallex_guardrail_5300to100_dedicated`, `airwallex_guardrail_5300to100_dedicated_definitive`
+- Ramp summary/Google Sheet input-token columns are now:
+  - `avg_input_tok_total` (provider usage input tokens)
+  - `avg_system_tok_est` (dataset-estimated system tokens)
+  - `avg_user_prompt_tok_est` (dataset-estimated user-prompt tokens)
+  - `avg_total_out_tok_est` was removed from the main summary output to reduce clutter.
 - In `diagnostic_mode: true`, benchmarker writes three files under `output/` on every run:
   - `diagnostic_<ts>_prompts.txt` (system + user prompt)
   - `diagnostic_<ts>_thinking_trace.txt` (full reasoning text)
