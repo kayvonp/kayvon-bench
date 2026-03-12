@@ -67,6 +67,28 @@ llm_profiles:
     provider: together
     model: together_sso/Qwen/Qwen3.5-397B-A17B-FP8-e2314544
 
+  together_glm_5_serverless:
+    provider: together
+    model: zai-org/GLM-5
+    streaming_enabled: true
+
+  together_kimi_k2_5_serverless:
+    provider: together
+    model: moonshotai/Kimi-K2.5
+    reasoning_effort: low
+    streaming_enabled: true
+
+  together_qwen3_5_397b_serverless:
+    provider: together
+    model: Qwen/Qwen3.5-397B-A17B
+    reasoning_effort: low
+    streaming_enabled: true
+
+  together_minimax_m2_5_serverless:
+    provider: together
+    model: MiniMaxAI/MiniMax-M2.5
+    streaming_enabled: true
+
 benchmark_profiles:
   summarization_4000to100_non_strict_smoke_dedicated_1xh100_low:
     diagnostic_mode: false
@@ -253,5 +275,137 @@ benchmark_profiles:
       min_requests: 64
       max_requests: 64
     progress_update_every: 4
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_glm_5_serverless_smoke:
+    diagnostic_mode: true
+    llm_profile: together_glm_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_glm_5_serverless_small:
+    diagnostic_mode: false
+    llm_profile: together_glm_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 2
+    request_spacing_s: 5
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_kimi_k2_5_serverless_smoke:
+    diagnostic_mode: true
+    llm_profile: together_kimi_k2_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_kimi_k2_5_serverless_small:
+    diagnostic_mode: false
+    llm_profile: together_kimi_k2_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 2
+    request_spacing_s: 25
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_qwen3_5_397b_serverless_smoke:
+    diagnostic_mode: true
+    llm_profile: together_qwen3_5_397b_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_qwen3_5_397b_serverless_small:
+    diagnostic_mode: false
+    llm_profile: together_qwen3_5_397b_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 2
+    request_spacing_s: 15
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_minimax_m2_5_serverless_smoke:
+    diagnostic_mode: true
+    llm_profile: together_minimax_m2_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_minimax_m2_5_serverless_small:
+    diagnostic_mode: false
+    llm_profile: together_minimax_m2_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 1200
+    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 2
+    request_spacing_s: 5
+    progress_update_every: 1
     request_timeout_s: 120
     stop_on_saturation: false

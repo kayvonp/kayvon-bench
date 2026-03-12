@@ -170,6 +170,69 @@ def extract_reasoning_text(response: Any, api_style: str) -> str:
     return ""
 
 
+def extract_stream_delta_text(chunk: Any) -> str:
+    choices = getattr(chunk, "choices", None) or []
+    parts: list[str] = []
+    for choice in choices:
+        delta = getattr(choice, "delta", None)
+        if delta is None and isinstance(choice, dict):
+            delta = choice.get("delta")
+        if not delta:
+            continue
+
+        content = getattr(delta, "content", None)
+        if content is None and isinstance(delta, dict):
+            content = delta.get("content")
+
+        if isinstance(content, str):
+            if content:
+                parts.append(content)
+            continue
+
+        if isinstance(content, list):
+            for item in content:
+                text = getattr(item, "text", None) if not isinstance(item, dict) else item.get("text")
+                if text:
+                    parts.append(str(text))
+            continue
+
+        text = getattr(delta, "text", None) if not isinstance(delta, dict) else delta.get("text")
+        if text:
+            parts.append(str(text))
+
+    return "".join(parts)
+
+
+def extract_stream_finish_reason(chunk: Any) -> str:
+    choices = getattr(chunk, "choices", None) or []
+    for choice in choices:
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason is None and isinstance(choice, dict):
+            finish_reason = choice.get("finish_reason")
+        if finish_reason:
+            return str(finish_reason)
+    return ""
+
+
+def extract_stream_reasoning_text(chunk: Any) -> str:
+    choices = getattr(chunk, "choices", None) or []
+    parts: list[str] = []
+    for choice in choices:
+        delta = getattr(choice, "delta", None)
+        if delta is None and isinstance(choice, dict):
+            delta = choice.get("delta")
+        if not delta:
+            continue
+        reasoning = getattr(delta, "reasoning", None)
+        if reasoning is None and isinstance(delta, dict):
+            reasoning = delta.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            parts.append(reasoning)
+        elif isinstance(reasoning, list):
+            parts.extend(str(item) for item in reasoning if item)
+    return "".join(parts)
+
+
 def estimate_visible_tokens(text: str) -> int:
     if not text:
         return 0
@@ -327,6 +390,8 @@ def append_summary_to_google_sheet(
         "out_tok/s",
         "req_out_tok/s_p50",
         "req_out_tok/s_p95",
+        "ttft_p50_s",
+        "ttft_p95_s",
         "lat_p50_s",
         "lat_p95_s",
         "avg_input_tok_total",
@@ -355,6 +420,8 @@ def append_summary_to_google_sheet(
                 f"{item['output_tokens_per_sec']:.1f}",
                 f"{item['req_output_tps_p50']:.1f}",
                 f"{item['req_output_tps_p95']:.1f}",
+                f"{item['ttft_p50']:.2f}",
+                f"{item['ttft_p95']:.2f}",
                 f"{item['lat_p50']:.2f}",
                 f"{item['lat_p95']:.2f}",
                 f"{item['avg_total_input_tokens_per_request']:.1f}",
@@ -470,6 +537,7 @@ def resolve_llm_settings(config: dict[str, Any], llm_profile_name: str) -> dict[
         "api_key_env": api_key_env,
         "api_style": api_style,
         "reasoning_effort": profile.get("reasoning_effort"),
+        "streaming_enabled": bool(profile.get("streaming_enabled", False)),
     }
 
 
@@ -485,6 +553,19 @@ def read_corpus(path: str) -> list[dict[str, Any]]:
     if not records:
         raise SystemExit(f"No records found in dataset: {path}")
     return records
+
+
+def attach_result_metadata(
+    result: dict[str, Any],
+    meta: dict[str, int | None],
+) -> None:
+    result_target = meta.get("target_output_tokens")
+    if result.get("ok") and result_target:
+        result["target_output_tokens"] = result_target
+    if result.get("ok"):
+        result["system_input_tokens_est"] = int(meta.get("system_input_tokens_est") or 0)
+        result["user_prompt_tokens_est"] = int(meta.get("user_prompt_tokens_est") or 0)
+        result["total_input_tokens_est"] = int(meta.get("total_input_tokens_est") or 0)
 
 
 def build_chat_messages(sample: dict[str, Any]) -> list[dict[str, str]]:
@@ -540,6 +621,7 @@ def single_request(
     timeout_s: float,
     reasoning_effort: str | None = None,
     include_full_text: bool = False,
+    use_streaming: bool = False,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     try:
@@ -558,41 +640,111 @@ def single_request(
         if reasoning_effort:
             request_kwargs["reasoning_effort"] = reasoning_effort
 
-        if output_tokens is not None:
-            if api_style == "responses":
-                request_kwargs["max_output_tokens"] = output_tokens
-                try:
-                    response = client.responses.create(**request_kwargs)
-                except TypeError:
-                    request_kwargs.pop("reasoning_effort", None)
-                    request_kwargs.pop("max_output_tokens", None)
-                    request_kwargs["max_tokens"] = output_tokens
-                    response = client.responses.create(**request_kwargs)
-            else:
+        ttft_s: float | None = None
+        finish_reason = ""
+        visible_text = ""
+        reasoning_text = ""
+
+        if use_streaming:
+            if api_style != "chat_completions":
+                raise ValueError("Streaming is only supported for chat_completions requests.")
+            request_kwargs["stream"] = True
+            request_kwargs["stream_options"] = {"include_usage": True}
+            if output_tokens is not None:
                 request_kwargs["max_completion_tokens"] = output_tokens
                 try:
-                    response = client.chat.completions.create(**request_kwargs)
+                    stream = client.chat.completions.create(**request_kwargs)
                 except TypeError:
                     request_kwargs.pop("reasoning_effort", None)
+                    request_kwargs.pop("stream_options", None)
                     request_kwargs.pop("max_completion_tokens", None)
                     request_kwargs["max_tokens"] = output_tokens
-                    response = client.chat.completions.create(**request_kwargs)
-        else:
-            if api_style == "responses":
-                try:
-                    response = client.responses.create(**request_kwargs)
-                except TypeError:
-                    request_kwargs.pop("reasoning_effort", None)
-                    response = client.responses.create(**request_kwargs)
+                    stream = client.chat.completions.create(**request_kwargs)
             else:
                 try:
-                    response = client.chat.completions.create(**request_kwargs)
+                    stream = client.chat.completions.create(**request_kwargs)
                 except TypeError:
                     request_kwargs.pop("reasoning_effort", None)
-                    response = client.chat.completions.create(**request_kwargs)
+                    request_kwargs.pop("stream_options", None)
+                    stream = client.chat.completions.create(**request_kwargs)
 
-        prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(response)
-        usage = getattr(response, "usage", None)
+            visible_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            chunk_count = 0
+            usage_chunk = None
+            for chunk in stream:
+                chunk_count += 1
+                delta_text = extract_stream_delta_text(chunk)
+                delta_reasoning = extract_stream_reasoning_text(chunk)
+                if delta_text:
+                    visible_parts.append(delta_text)
+                    if ttft_s is None:
+                        ttft_s = time.perf_counter() - start
+                if delta_reasoning:
+                    reasoning_parts.append(delta_reasoning)
+                if getattr(chunk, "usage", None) is not None:
+                    usage_chunk = chunk
+                finish_reason = extract_stream_finish_reason(chunk) or finish_reason
+
+            visible_text = "".join(visible_parts)
+            reasoning_text = "".join(reasoning_parts)
+            if not visible_text:
+                latency = time.perf_counter() - start
+                return {
+                    "ok": False,
+                    "latency_s": latency,
+                    "ttft_s": ttft_s,
+                    "reasoning_text": reasoning_text,
+                    "error": (
+                        f"Streaming response completed without visible content "
+                        f"(chunks={chunk_count}, reasoning_chars={len(reasoning_text)})."
+                    ),
+                }
+            prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(usage_chunk)
+            usage = getattr(usage_chunk, "usage", None) if usage_chunk is not None else None
+        else:
+            if output_tokens is not None:
+                if api_style == "responses":
+                    request_kwargs["max_output_tokens"] = output_tokens
+                    try:
+                        response = client.responses.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("max_output_tokens", None)
+                        request_kwargs["max_tokens"] = output_tokens
+                        response = client.responses.create(**request_kwargs)
+                else:
+                    request_kwargs["max_completion_tokens"] = output_tokens
+                    try:
+                        response = client.chat.completions.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("max_completion_tokens", None)
+                        request_kwargs["max_tokens"] = output_tokens
+                        response = client.chat.completions.create(**request_kwargs)
+            else:
+                if api_style == "responses":
+                    try:
+                        response = client.responses.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        response = client.responses.create(**request_kwargs)
+                else:
+                    try:
+                        response = client.chat.completions.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        response = client.chat.completions.create(**request_kwargs)
+
+            prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(response)
+            usage = getattr(response, "usage", None)
+            visible_text = extract_response_text(response, api_style)
+            reasoning_text = extract_reasoning_text(response, api_style)
+            if api_style == "chat_completions":
+                choices = getattr(response, "choices", None) or []
+                if choices:
+                    finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
+
         reasoning_tokens = extract_usage_detail_int(usage, "completion_tokens_details", "reasoning_tokens")
         if reasoning_tokens == 0:
             reasoning_tokens = extract_usage_detail_int(usage, "output_tokens_details", "reasoning_tokens")
@@ -602,23 +754,17 @@ def single_request(
         rejected_prediction_tokens = extract_usage_detail_int(
             usage, "completion_tokens_details", "rejected_prediction_tokens"
         )
-        visible_text = extract_response_text(response, api_style)
-        reasoning_text = extract_reasoning_text(response, api_style)
         visible_chars = len(visible_text)
         visible_words = len(visible_text.split()) if visible_text else 0
         visible_token_est = estimate_visible_tokens(visible_text)
         reasoning_chars = len(reasoning_text)
         reasoning_token_est = estimate_visible_tokens(reasoning_text)
-        finish_reason = ""
-        if api_style == "chat_completions":
-            choices = getattr(response, "choices", None) or []
-            if choices:
-                finish_reason = str(getattr(choices[0], "finish_reason", "") or "")
         latency = time.perf_counter() - start
         req_output_tps = completion_tokens / latency if latency > 0 else 0.0
         result = {
             "ok": True,
             "latency_s": latency,
+            "ttft_s": ttft_s,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
@@ -644,6 +790,7 @@ def single_request(
         return {
             "ok": False,
             "latency_s": latency,
+            "ttft_s": None,
             "error": str(e),
         }
 
@@ -652,6 +799,7 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
     successes = [r for r in results if r["ok"]]
     errors = [r for r in results if not r["ok"]]
     latencies = [r["latency_s"] for r in successes]
+    ttfts = [float(r["ttft_s"]) for r in successes if r.get("ttft_s") is not None]
     req_output_tps_values = [r["req_output_tps"] for r in successes]
     prompt_tokens = sum(int(r.get("prompt_tokens", 0)) for r in successes)
     completion_tokens = sum(int(r.get("completion_tokens", 0)) for r in successes)
@@ -705,6 +853,8 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
             (visible_token_est + reasoning_token_est) / success_count
         ) if success_count else 0.0,
         "avg_req_output_tokens_per_sec": mean(req_output_tps_values) if req_output_tps_values else 0.0,
+        "ttft_p50": percentile(ttfts, 0.50),
+        "ttft_p95": percentile(ttfts, 0.95),
         "lat_p50": percentile(latencies, 0.50),
         "lat_p95": percentile(latencies, 0.95),
         "req_output_tps_p50": percentile(req_output_tps_values, 0.50),
@@ -778,6 +928,11 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     sat_cfg = profile.get("saturation") or {}
     diagnostic_mode = bool(profile.get("diagnostic_mode", config.get("diagnostic_mode", False)))
     token_diagnostics = bool(profile.get("token_diagnostics", diagnostic_mode))
+    measure_ttft = bool(profile.get("measure_ttft", llm["api_style"] == "chat_completions"))
+    use_streaming = bool(
+        profile.get("use_streaming", measure_ttft and llm["api_style"] == "chat_completions")
+    )
+    request_spacing_s = float(profile.get("request_spacing_s", 0.0))
 
     if not concurrency_levels:
         raise SystemExit("concurrency_levels is empty.")
@@ -800,9 +955,13 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     print(f"Provider: {llm['provider_name']}")
     print(f"Model: {llm['model']}")
     print(f"API style: {llm['api_style']}")
+    print(f"Streaming enabled: {use_streaming}")
+    print(f"TTFT enabled: {measure_ttft}")
     print(f"Dataset: {dataset_path} ({len(corpus)} records)")
     print(f"Concurrency ramp: {concurrency_levels}")
     print(f"Diagnostic mode: {diagnostic_mode}")
+    if request_spacing_s > 0:
+        print(f"Request spacing: {request_spacing_s:.1f}s")
     if max_output_tokens_mode == "fixed":
         print(f"Max output tokens: mode=fixed, value={max_output_tokens_fixed}")
     else:
@@ -850,76 +1009,101 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
         start_level = time.perf_counter()
         results: list[dict[str, Any]] = []
 
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures: dict[Any, dict[str, int | None]] = {}
-            for sample in samples:
-                if max_output_tokens_mode == "disabled":
-                    sample_target = None
-                elif max_output_tokens_mode == "fixed":
-                    sample_target = max_output_tokens_fixed
-                else:
-                    sample_target = resolve_output_token_target(sample)
-                sample_system_tokens_est, sample_user_prompt_tokens_est, sample_total_input_tokens_est = (
-                    resolve_sample_input_token_estimates(sample)
+        def print_progress(done_count: int) -> None:
+            elapsed = time.perf_counter() - start_level
+            done_output_tokens = sum(int(r.get("completion_tokens", 0)) for r in results if r.get("ok"))
+            done_ok = sum(1 for r in results if r.get("ok"))
+            done_err = done_count - done_ok
+            latencies = [float(r["latency_s"]) for r in results if r.get("ok")]
+            done_target_tokens = sum(
+                int(r.get("target_output_tokens", 0) or 0) for r in results if r.get("ok")
+            )
+            p50 = percentile(latencies, 0.5)
+            p95 = percentile(latencies, 0.95)
+            req_per_s = done_count / elapsed if elapsed > 0 else 0.0
+            output_tps = done_output_tokens / elapsed if elapsed > 0 else 0.0
+            avg_actual = done_output_tokens / done_ok if done_ok else 0.0
+            avg_target = done_target_tokens / done_ok if done_ok else 0.0
+            target_ratio = (avg_actual / avg_target) if avg_target else 0.0
+            print(
+                "  "
+                f"{done_count:>4}/{requests_for_level:<4} | "
+                f"{done_ok:>3} | "
+                f"{done_err:>3} | "
+                f"{elapsed:>8.2f} | "
+                f"{req_per_s:>5.2f} | "
+                f"{output_tps:>9.1f} | "
+                f"{p50:>8.2f} | "
+                f"{p95:>8.2f} | "
+                f"avg_out={avg_actual:>6.0f}/{avg_target:>6.0f} ({target_ratio:>5.2f}x)"
+            )
+
+        sample_payloads: list[tuple[dict[str, Any], dict[str, int | None]]] = []
+        for sample in samples:
+            if max_output_tokens_mode == "disabled":
+                sample_target = None
+            elif max_output_tokens_mode == "fixed":
+                sample_target = max_output_tokens_fixed
+            else:
+                sample_target = resolve_output_token_target(sample)
+            sample_system_tokens_est, sample_user_prompt_tokens_est, sample_total_input_tokens_est = (
+                resolve_sample_input_token_estimates(sample)
+            )
+            sample_payloads.append(
+                (
+                    sample,
+                    {
+                        "target_output_tokens": sample_target,
+                        "system_input_tokens_est": sample_system_tokens_est,
+                        "user_prompt_tokens_est": sample_user_prompt_tokens_est,
+                        "total_input_tokens_est": sample_total_input_tokens_est,
+                    },
                 )
-                fut = executor.submit(
-                    single_request,
+            )
+
+        if concurrency == 1:
+            for i, (sample, meta) in enumerate(sample_payloads, start=1):
+                if i > 1 and request_spacing_s > 0:
+                    time.sleep(request_spacing_s)
+                result = single_request(
                     client,
                     llm["model"],
                     llm["api_style"],
                     sample,
-                    sample_target,
+                    meta["target_output_tokens"],
                     timeout_s,
                     llm.get("reasoning_effort"),
                     diagnostic_mode,
+                    use_streaming,
                 )
-                futures[fut] = {
-                    "target_output_tokens": sample_target,
-                    "system_input_tokens_est": sample_system_tokens_est,
-                    "user_prompt_tokens_est": sample_user_prompt_tokens_est,
-                    "total_input_tokens_est": sample_total_input_tokens_est,
-                }
-
-            for i, future in enumerate(as_completed(futures), start=1):
-                result = future.result()
+                attach_result_metadata(result, meta)
                 results.append(result)
-                meta = futures[future]
-                result_target = meta.get("target_output_tokens")
-                if result.get("ok") and result_target:
-                    result["target_output_tokens"] = result_target
-                if result.get("ok"):
-                    result["system_input_tokens_est"] = int(meta.get("system_input_tokens_est") or 0)
-                    result["user_prompt_tokens_est"] = int(meta.get("user_prompt_tokens_est") or 0)
-                    result["total_input_tokens_est"] = int(meta.get("total_input_tokens_est") or 0)
-
                 if i % progress_every == 0 or i == requests_for_level:
-                    elapsed = time.perf_counter() - start_level
-                    done_output_tokens = sum(int(r.get("completion_tokens", 0)) for r in results if r.get("ok"))
-                    done_ok = sum(1 for r in results if r.get("ok"))
-                    done_err = i - done_ok
-                    latencies = [float(r["latency_s"]) for r in results if r.get("ok")]
-                    done_target_tokens = sum(
-                        int(r.get("target_output_tokens", 0) or 0) for r in results if r.get("ok")
+                    print_progress(i)
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures: dict[Any, dict[str, int | None]] = {}
+                for sample, meta in sample_payloads:
+                    fut = executor.submit(
+                        single_request,
+                        client,
+                        llm["model"],
+                        llm["api_style"],
+                        sample,
+                        meta["target_output_tokens"],
+                        timeout_s,
+                        llm.get("reasoning_effort"),
+                        diagnostic_mode,
+                        use_streaming,
                     )
-                    p50 = percentile(latencies, 0.5)
-                    p95 = percentile(latencies, 0.95)
-                    req_per_s = i / elapsed if elapsed > 0 else 0.0
-                    output_tps = done_output_tokens / elapsed if elapsed > 0 else 0.0
-                    avg_actual = done_output_tokens / done_ok if done_ok else 0.0
-                    avg_target = done_target_tokens / done_ok if done_ok else 0.0
-                    target_ratio = (avg_actual / avg_target) if avg_target else 0.0
-                    print(
-                        "  "
-                        f"{i:>4}/{requests_for_level:<4} | "
-                        f"{done_ok:>3} | "
-                        f"{done_err:>3} | "
-                        f"{elapsed:>8.2f} | "
-                        f"{req_per_s:>5.2f} | "
-                        f"{output_tps:>9.1f} | "
-                        f"{p50:>8.2f} | "
-                        f"{p95:>8.2f} | "
-                        f"avg_out={avg_actual:>6.0f}/{avg_target:>6.0f} ({target_ratio:>5.2f}x)"
-                    )
+                    futures[fut] = meta
+
+                for i, future in enumerate(as_completed(futures), start=1):
+                    result = future.result()
+                    results.append(result)
+                    attach_result_metadata(result, futures[future])
+                    if i % progress_every == 0 or i == requests_for_level:
+                        print_progress(i)
 
         elapsed_level = time.perf_counter() - start_level
         metrics = summarize_level(concurrency, elapsed_level, results)
@@ -933,6 +1117,8 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 "out_tok/s",
                 "req_out_tok/s(avg/p50/p95)",
                 "avg_tok(vis/thk/total_est)",
+                "ttft_p50_s",
+                "ttft_p95_s",
                 "lat_p50_s",
                 "lat_p95_s",
                 "success",
@@ -951,6 +1137,8 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     f"{metrics['avg_thinking_tokens_est_per_request']:.1f}/"
                     f"{metrics['avg_total_output_tokens_est_per_request']:.1f}"
                 ),
+                f"{metrics['ttft_p50']:.2f}",
+                f"{metrics['ttft_p95']:.2f}",
                 f"{metrics['lat_p50']:.2f}",
                 f"{metrics['lat_p95']:.2f}",
                 f"{metrics['successes']}/{metrics['completed']}",
@@ -971,6 +1159,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 "reasoning_tok_est",
                 "visible_chars",
                 "reasoning_chars",
+                "ttft_s",
                 "lat_s",
             ]
             diag_rows: list[list[str]] = []
@@ -986,6 +1175,7 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                         str(int(result.get("reasoning_token_est", 0) or 0)),
                         str(int(result.get("visible_chars", 0) or 0)),
                         str(int(result.get("reasoning_chars", 0) or 0)),
+                        "" if result.get("ttft_s") is None else f"{float(result.get('ttft_s', 0.0)):.2f}",
                         f"{float(result.get('latency_s', 0.0)):.2f}",
                     ]
                 )
@@ -1063,6 +1253,8 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                 f"{item['output_tokens_per_sec']:.1f}",
                 f"{item['req_output_tps_p50']:.1f}",
                 f"{item['req_output_tps_p95']:.1f}",
+                f"{item['ttft_p50']:.2f}",
+                f"{item['ttft_p95']:.2f}",
                 f"{item['lat_p50']:.2f}",
                 f"{item['lat_p95']:.2f}",
                 f"{item['avg_total_input_tokens_per_request']:.1f}",
@@ -1082,6 +1274,8 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
             "out_tok/s",
             "req_out_tok/s_p50",
             "req_out_tok/s_p95",
+            "ttft_p50_s",
+            "ttft_p95_s",
             "lat_p50_s",
             "lat_p95_s",
             "avg_input_tok_total",
