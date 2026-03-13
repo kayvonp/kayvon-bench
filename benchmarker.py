@@ -264,19 +264,56 @@ def resolve_output_token_target(sample: dict[str, Any]) -> int | None:
     return None
 
 
+def estimate_message_input_token_split(sample: dict[str, Any]) -> tuple[int, int]:
+    raw_messages = sample.get("messages") or []
+    system_texts: list[str] = []
+    user_texts: list[str] = []
+
+    for msg in raw_messages:
+        role = str(msg.get("role", ""))
+        content = str(msg.get("content", ""))
+        if not content:
+            continue
+        if role == "system":
+            system_texts.append(content)
+        elif role == "user":
+            user_texts.append(content)
+
+    system_tokens = estimate_visible_tokens("\n\n".join(system_texts)) if system_texts else 0
+    user_tokens = estimate_visible_tokens("\n\n".join(user_texts)) if user_texts else 0
+    return system_tokens, user_tokens
+
+
 def resolve_sample_input_token_estimates(sample: dict[str, Any]) -> tuple[int, int, int]:
     total_input_tokens = (
         get_int_field(sample.get("prompt_tokens_estimate"))
         or get_int_field(sample.get("input_len_est"))
         or 0
     )
-    system_tokens = get_int_field(sample.get("system_tokens_estimate")) or 0
+    system_tokens = get_int_field(sample.get("system_tokens_estimate"))
     user_prompt_tokens = get_int_field(sample.get("user_tokens_estimate"))
+
+    inferred_system_tokens, inferred_user_tokens = estimate_message_input_token_split(sample)
+    if system_tokens is None:
+        system_tokens = inferred_system_tokens
     if user_prompt_tokens is None:
-        if total_input_tokens > 0 and system_tokens > 0:
+        user_prompt_tokens = inferred_user_tokens
+
+    system_tokens = system_tokens or 0
+    user_prompt_tokens = user_prompt_tokens or 0
+
+    split_total = system_tokens + user_prompt_tokens
+    if total_input_tokens > 0:
+        if split_total > 0:
+            scale = total_input_tokens / split_total
+            system_tokens = int(round(system_tokens * scale))
             user_prompt_tokens = max(0, total_input_tokens - system_tokens)
         else:
-            user_prompt_tokens = 0
+            system_tokens = 0
+            user_prompt_tokens = total_input_tokens
+    else:
+        total_input_tokens = split_total
+
     return system_tokens, user_prompt_tokens, total_input_tokens
 
 
@@ -499,7 +536,7 @@ def compute_requests_for_level(concurrency: int, profile: dict[str, Any]) -> int
     return static_requests
 
 
-def resolve_llm_settings(config: dict[str, Any], llm_profile_name: str) -> dict[str, str]:
+def resolve_llm_settings(config: dict[str, Any], llm_profile_name: str) -> dict[str, Any]:
     providers = {**DEFAULT_PROVIDERS, **(config.get("providers") or {})}
     profiles = config.get("llm_profiles") or config.get("profiles") or {}
 
@@ -537,6 +574,10 @@ def resolve_llm_settings(config: dict[str, Any], llm_profile_name: str) -> dict[
         "api_key_env": api_key_env,
         "api_style": api_style,
         "reasoning_effort": profile.get("reasoning_effort"),
+        "reasoning": profile.get("reasoning"),
+        "temperature": profile.get("temperature"),
+        "top_p": profile.get("top_p"),
+        "empty_visible_stream_retries": int(profile.get("empty_visible_stream_retries", 0) or 0),
         "streaming_enabled": bool(profile.get("streaming_enabled", False)),
     }
 
@@ -620,6 +661,10 @@ def single_request(
     output_tokens: int | None,
     timeout_s: float,
     reasoning_effort: str | None = None,
+    reasoning: dict[str, Any] | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    empty_visible_stream_retries: int = 0,
     include_full_text: bool = False,
     use_streaming: bool = False,
 ) -> dict[str, Any]:
@@ -639,6 +684,12 @@ def single_request(
 
         if reasoning_effort:
             request_kwargs["reasoning_effort"] = reasoning_effort
+        if reasoning:
+            request_kwargs["reasoning"] = reasoning
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
+        if top_p is not None:
+            request_kwargs["top_p"] = top_p
 
         ttft_s: float | None = None
         finish_reason = ""
@@ -648,57 +699,72 @@ def single_request(
         if use_streaming:
             if api_style != "chat_completions":
                 raise ValueError("Streaming is only supported for chat_completions requests.")
-            request_kwargs["stream"] = True
-            request_kwargs["stream_options"] = {"include_usage": True}
-            if output_tokens is not None:
-                request_kwargs["max_completion_tokens"] = output_tokens
-                try:
-                    stream = client.chat.completions.create(**request_kwargs)
-                except TypeError:
-                    request_kwargs.pop("reasoning_effort", None)
-                    request_kwargs.pop("stream_options", None)
-                    request_kwargs.pop("max_completion_tokens", None)
-                    request_kwargs["max_tokens"] = output_tokens
-                    stream = client.chat.completions.create(**request_kwargs)
+            attempts = max(1, empty_visible_stream_retries + 1)
+            last_empty_visible_error = ""
+            for attempt_idx in range(attempts):
+                request_kwargs["stream"] = True
+                request_kwargs["stream_options"] = {"include_usage": True}
+                if output_tokens is not None:
+                    request_kwargs["max_completion_tokens"] = output_tokens
+                    try:
+                        stream = client.chat.completions.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
+                        request_kwargs.pop("stream_options", None)
+                        request_kwargs.pop("max_completion_tokens", None)
+                        request_kwargs["max_tokens"] = output_tokens
+                        stream = client.chat.completions.create(**request_kwargs)
+                else:
+                    try:
+                        stream = client.chat.completions.create(**request_kwargs)
+                    except TypeError:
+                        request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
+                        request_kwargs.pop("stream_options", None)
+                        stream = client.chat.completions.create(**request_kwargs)
+
+                visible_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                chunk_count = 0
+                usage_chunk = None
+                ttft_s = None
+                finish_reason = ""
+                for chunk in stream:
+                    chunk_count += 1
+                    delta_text = extract_stream_delta_text(chunk)
+                    delta_reasoning = extract_stream_reasoning_text(chunk)
+                    if delta_text:
+                        visible_parts.append(delta_text)
+                        if ttft_s is None:
+                            ttft_s = time.perf_counter() - start
+                    if delta_reasoning:
+                        reasoning_parts.append(delta_reasoning)
+                    if getattr(chunk, "usage", None) is not None:
+                        usage_chunk = chunk
+                    finish_reason = extract_stream_finish_reason(chunk) or finish_reason
+
+                visible_text = "".join(visible_parts)
+                reasoning_text = "".join(reasoning_parts)
+                if visible_text:
+                    break
+
+                last_empty_visible_error = (
+                    f"Streaming response completed without visible content "
+                    f"(chunks={chunk_count}, reasoning_chars={len(reasoning_text)}, attempt={attempt_idx + 1}/{attempts})."
+                )
             else:
-                try:
-                    stream = client.chat.completions.create(**request_kwargs)
-                except TypeError:
-                    request_kwargs.pop("reasoning_effort", None)
-                    request_kwargs.pop("stream_options", None)
-                    stream = client.chat.completions.create(**request_kwargs)
-
-            visible_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            chunk_count = 0
-            usage_chunk = None
-            for chunk in stream:
-                chunk_count += 1
-                delta_text = extract_stream_delta_text(chunk)
-                delta_reasoning = extract_stream_reasoning_text(chunk)
-                if delta_text:
-                    visible_parts.append(delta_text)
-                    if ttft_s is None:
-                        ttft_s = time.perf_counter() - start
-                if delta_reasoning:
-                    reasoning_parts.append(delta_reasoning)
-                if getattr(chunk, "usage", None) is not None:
-                    usage_chunk = chunk
-                finish_reason = extract_stream_finish_reason(chunk) or finish_reason
-
-            visible_text = "".join(visible_parts)
-            reasoning_text = "".join(reasoning_parts)
-            if not visible_text:
                 latency = time.perf_counter() - start
                 return {
                     "ok": False,
                     "latency_s": latency,
                     "ttft_s": ttft_s,
                     "reasoning_text": reasoning_text,
-                    "error": (
-                        f"Streaming response completed without visible content "
-                        f"(chunks={chunk_count}, reasoning_chars={len(reasoning_text)})."
-                    ),
+                    "error": last_empty_visible_error,
                 }
             prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(usage_chunk)
             usage = getattr(usage_chunk, "usage", None) if usage_chunk is not None else None
@@ -710,6 +776,9 @@ def single_request(
                         response = client.responses.create(**request_kwargs)
                     except TypeError:
                         request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
                         request_kwargs.pop("max_output_tokens", None)
                         request_kwargs["max_tokens"] = output_tokens
                         response = client.responses.create(**request_kwargs)
@@ -719,6 +788,9 @@ def single_request(
                         response = client.chat.completions.create(**request_kwargs)
                     except TypeError:
                         request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
                         request_kwargs.pop("max_completion_tokens", None)
                         request_kwargs["max_tokens"] = output_tokens
                         response = client.chat.completions.create(**request_kwargs)
@@ -728,12 +800,18 @@ def single_request(
                         response = client.responses.create(**request_kwargs)
                     except TypeError:
                         request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
                         response = client.responses.create(**request_kwargs)
                 else:
                     try:
                         response = client.chat.completions.create(**request_kwargs)
                     except TypeError:
                         request_kwargs.pop("reasoning_effort", None)
+                        request_kwargs.pop("reasoning", None)
+                        request_kwargs.pop("temperature", None)
+                        request_kwargs.pop("top_p", None)
                         response = client.chat.completions.create(**request_kwargs)
 
             prompt_tokens, completion_tokens, total_tokens = extract_usage_tokens(response)
@@ -1073,6 +1151,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                     meta["target_output_tokens"],
                     timeout_s,
                     llm.get("reasoning_effort"),
+                    llm.get("reasoning"),
+                    llm.get("temperature"),
+                    llm.get("top_p"),
+                    int(llm.get("empty_visible_stream_retries", 0) or 0),
                     diagnostic_mode,
                     use_streaming,
                 )
@@ -1093,6 +1175,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
                         meta["target_output_tokens"],
                         timeout_s,
                         llm.get("reasoning_effort"),
+                        llm.get("reasoning"),
+                        llm.get("temperature"),
+                        llm.get("top_p"),
+                        int(llm.get("empty_visible_stream_retries", 0) or 0),
                         diagnostic_mode,
                         use_streaming,
                     )
