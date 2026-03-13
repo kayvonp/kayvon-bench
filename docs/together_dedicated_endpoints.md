@@ -117,15 +117,14 @@ Then add a benchmark profile pointing to that llm profile.
 The benchmark should use the dedicated endpoint `name`, for example:
 
 ```yaml
-model: together_sso/moonshotai/Kimi-K2.5-1b38c3da
+model: together_sso/moonshotai/Kimi-K2.5-070fc5a6
 ```
 
 ## Current Kimi Dedicated Endpoint
 
 Current endpoint created during investigation:
 
-- endpoint ID: `endpoint-1baa3f15-23d0-44c8-8e63-3f0ca4702515`
-- endpoint name: `together_sso/moonshotai/Kimi-K2.5-1b38c3da`
+- endpoint name: `together_sso/moonshotai/Kimi-K2.5-070fc5a6`
 - display name: `kpirestani_e423/moonshotai/Kimi-K2.5`
 - hardware: `8x_nvidia_h200_140gb_sxm`
 

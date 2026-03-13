@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Airweave Track A Model Report</title>
+  <style>
+    :root {
+      --bg: #f6f3ee;
+      --panel: #fffdf8;
+      --ink: #1f2937;
+      --muted: #5b6470;
+      --line: #d7d0c4;
+      --accent: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #f3efe8 0%, #f8f6f1 100%);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1, h2 {
+      line-height: 1.1;
+      margin: 0 0 16px;
+    }
+    h1 {
+      font-size: 40px;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      font-size: 28px;
+      margin-top: 40px;
+    }
+    p, li {
+      font-size: 18px;
+    }
+    .lede {
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 22px 22px 18px;
+      box-shadow: 0 10px 30px rgba(31, 41, 55, 0.05);
+      margin-bottom: 24px;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin: 18px 0 8px;
+    }
+    .meta div {
+      background: #f2eee7;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 15px;
+      color: var(--muted);
+    }
+    .meta strong {
+      display: block;
+      color: var(--ink);
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+      overflow: hidden;
+      border-radius: 14px;
+    }
+    thead th {
+      background: #ebe5da;
+      text-align: left;
+      padding: 14px 12px;
+      border-bottom: 2px solid #bcae96;
+    }
+    tbody td {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    tbody tr:nth-child(even) {
+      background: #faf7f1;
+    }
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+    .plot img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: white;
+    }
+    .caption {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    a { color: var(--accent); }
+    ul { margin-top: 12px; }
+    @media (min-width: 900px) {
+      .grid.two {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Airweave Track A Model Report</h1>
+    <p class="lede">March 13, 2026. Track A retrieval benchmark, 5 samples per model, concurrency 1.</p>
+
+    <div class="card">
+      <div class="meta">
+        <div><strong>Workload</strong>Track A retrieval</div>
+        <div><strong>Samples</strong>5 per model</div>
+        <div><strong>Suite</strong>march_2026_agentic_model_sweep_for_airweave</div>
+        <div><strong>Pricing note</strong>Kimi shown with public serverless pricing for comparison.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Summary Table</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>model</th>
+            <th>params</th>
+            <th class="num">ttft_p50_s</th>
+            <th class="num">ttft_p95_s</th>
+            <th class="num">lat_p50_s</th>
+            <th class="num">lat_p95_s</th>
+            <th class="num">serverless input / 1M</th>
+            <th class="num">serverless output / 1M</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>zai-org/GLM-5</td>
+            <td>744B</td>
+            <td class="num">20.6</td>
+            <td class="num">22.4</td>
+            <td class="num">21.5</td>
+            <td class="num">23.2</td>
+            <td class="num">$1.00</td>
+            <td class="num">$3.20</td>
+          </tr>
+          <tr>
+            <td>Qwen/Qwen3.5-397B-A17B</td>
+            <td>397B</td>
+            <td class="num">77.6</td>
+            <td class="num">92.9</td>
+            <td class="num">80.4</td>
+            <td class="num">97.1</td>
+            <td class="num">$0.70</td>
+            <td class="num">$0.70</td>
+          </tr>
+          <tr>
+            <td>MiniMaxAI/MiniMax-M2.5</td>
+            <td>228.7B</td>
+            <td class="num">6.6</td>
+            <td class="num">10.8</td>
+            <td class="num">8.1</td>
+            <td class="num">12.6</td>
+            <td class="num">$0.30</td>
+            <td class="num">$1.20</td>
+          </tr>
+          <tr>
+            <td>moonshotai/Kimi-K2.5</td>
+            <td>1T</td>
+            <td class="num">12.1</td>
+            <td class="num">18.9</td>
+            <td class="num">12.8</td>
+            <td class="num">19.7</td>
+            <td class="num">$0.50</td>
+            <td class="num">$2.80</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Executive Takeaways</h2>
+      <ul>
+        <li><strong>MiniMax M2.5</strong> is the strongest cost-latency option in this benchmark.</li>
+        <li><strong>Kimi K2.5</strong> is a strong premium second choice with full reliability and better latency than GLM-5.</li>
+        <li><strong>GLM-5</strong> is reliable but relatively slow and somewhat expensive for the latency it delivers.</li>
+        <li><strong>Qwen 3.5 397B</strong> showed the weakest operational profile here: very slow and one failure in the 5-sample run.</li>
+      </ul>
+    </div>
+
+    <div class="grid">
+      <div class="card plot">
+        <h2>Plot 1: Model Size vs TTFT</h2>
+        <img src="../figures/airweave_track_a_suite/params_vs_ttft.png" alt="Model size vs TTFT">
+        <div class="caption">Larger parameter count does not imply better responsiveness in this set. MiniMax stands out on first-token responsiveness.</div>
+      </div>
+
+      <div class="card plot">
+        <h2>Plot 2: Model Size vs End-to-End Latency</h2>
+        <img src="../figures/airweave_track_a_suite/params_vs_e2e_latency.png" alt="Model size vs end-to-end latency">
+        <div class="caption">MiniMax remains the fastest overall; Kimi is second-fastest despite being the largest model by total parameters.</div>
+      </div>
+
+      <div class="card plot">
+        <h2>Plot 3: Cost vs Latency</h2>
+        <img src="../figures/airweave_track_a_suite/cost_vs_latency.png" alt="Cost vs latency">
+        <div class="caption">MiniMax is the clearest efficiency-frontier winner. Qwen is not competitive once latency and reliability are considered.</div>
+      </div>
+
+      <div class="card plot">
+        <h2>Supplement: TTFT vs End-to-End Latency</h2>
+        <img src="../figures/airweave_track_a_suite/ttft_vs_e2e_latency.png" alt="TTFT vs end-to-end latency">
+        <div class="caption">This separates models that are slow to first token from those that are slow across the full response.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Files</h2>
+      <ul>
+        <li><a href="../figures/airweave_track_a_suite/airweave_track_a_latest_summary.csv">Summary CSV</a></li>
+        <li><a href="../configs/suites/march_2026_agentic_model_sweep_for_airweave.yaml">Suite config</a></li>
+        <li><a href="../corpus/v1_short_retrieval_qa.jsonl">Track A dataset</a></li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

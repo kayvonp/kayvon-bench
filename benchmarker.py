@@ -15,6 +15,7 @@ from openai import OpenAI
 
 
 DEFAULT_CONFIG_PATH = "benchmarker_config.yaml"
+DEFAULT_SUITES_DIR = "configs/suites"
 DEFAULT_SUMMARY_SHEET_URL = (
     "https://docs.google.com/spreadsheets/d/1RTTeX6_jh_GVz0FN6yfhEfbx36Gy-OkgEigy6EMMXgQ/edit?usp=sharing"
 )
@@ -55,6 +56,73 @@ def load_yaml_config(path: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise SystemExit(f"Config file '{path}' must be a top-level mapping.")
     return data
+
+
+def deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = deep_merge_dicts(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def normalize_suite_slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return slug
+
+
+def discover_suite_files(suites_dir: str) -> list[Path]:
+    root = Path(suites_dir)
+    if not root.exists():
+        return []
+    return sorted([path for path in root.glob("*.yaml") if path.is_file()])
+
+
+def load_suite_definition(suites_dir: str, suite_name: str) -> tuple[Path, dict[str, Any]]:
+    slug = normalize_suite_slug(suite_name)
+    if not slug:
+        raise SystemExit("Suite name is empty.")
+
+    root = Path(suites_dir)
+    suite_path = root / f"{slug}.yaml"
+    if not suite_path.exists():
+        available = [path.stem for path in discover_suite_files(suites_dir)]
+        available_str = ", ".join(available) if available else "none"
+        raise SystemExit(
+            f"Suite '{suite_name}' not found in {suites_dir}. Available suites: {available_str}."
+        )
+
+    data = load_yaml_config(str(suite_path))
+    if not isinstance(data, dict):
+        raise SystemExit(f"Suite file '{suite_path}' must be a top-level mapping.")
+    return suite_path, data
+
+
+def resolve_suite_runs(suite: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_runs = suite.get("runs") or []
+    if not isinstance(raw_runs, list) or not raw_runs:
+        raise SystemExit("Suite is missing a non-empty 'runs' list.")
+
+    runs: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_runs, start=1):
+        if isinstance(item, str):
+            profile_name = item.strip()
+            if not profile_name:
+                raise SystemExit(f"Suite run #{idx} is empty.")
+            runs.append({"benchmark_profile": profile_name})
+            continue
+        if not isinstance(item, dict):
+            raise SystemExit(f"Suite run #{idx} must be a string or mapping.")
+        profile_name = str(item.get("benchmark_profile", "")).strip()
+        if not profile_name:
+            raise SystemExit(f"Suite run #{idx} is missing benchmark_profile.")
+        run = dict(item)
+        run["benchmark_profile"] = profile_name
+        runs.append(run)
+    return runs
 
 
 def percentile(values: list[float], p: float) -> float:
@@ -360,6 +428,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--benchmark-profile",
         help="Benchmark profile name in config. Defaults to active.benchmark_profile (or benchmark.active_profile).",
+    )
+    parser.add_argument(
+        "--suite",
+        help="Named benchmark suite to run from configs/suites (slug or human-readable name).",
+    )
+    parser.add_argument(
+        "--suites-dir",
+        default=DEFAULT_SUITES_DIR,
+        help=f"Directory containing benchmark suite YAML files (default: {DEFAULT_SUITES_DIR}).",
+    )
+    parser.add_argument(
+        "--list-suites",
+        action="store_true",
+        help="List available benchmark suites and exit.",
+    )
+    parser.add_argument(
+        "--describe-suite",
+        help="Show the resolved runs for a suite and exit.",
     )
     return parser.parse_args()
 
@@ -1386,10 +1472,96 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     append_summary_to_google_sheet(history, benchmark_profile_name, llm)
 
 
+def print_suite_summary(suite_name: str, suite_path: Path, suite: dict[str, Any]) -> None:
+    runs = resolve_suite_runs(suite)
+    label = str(suite.get("label", suite_name)).strip() or suite_name
+    description = str(suite.get("description", "")).strip()
+    tags = suite.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+
+    print(f"Suite: {label}")
+    print(f"Slug: {normalize_suite_slug(suite_name)}")
+    print(f"File: {suite_path}")
+    if description:
+        print(f"Description: {description}")
+    if tags:
+        print(f"Tags: {', '.join(str(tag) for tag in tags)}")
+    print(f"Runs: {len(runs)}")
+    rows: list[list[str]] = []
+    for idx, run in enumerate(runs, start=1):
+        rows.append(
+            [
+                str(idx),
+                str(run["benchmark_profile"]),
+                str(run.get("label", "")),
+            ]
+        )
+    print("")
+    print_table(["#", "benchmark_profile", "label"], rows)
+
+
+def run_suite(
+    base_config: dict[str, Any],
+    suite_name: str,
+    suite_path: Path,
+    suite: dict[str, Any],
+) -> None:
+    runs = resolve_suite_runs(suite)
+    config_overrides = suite.get("config_overrides") or {}
+    if config_overrides and not isinstance(config_overrides, dict):
+        raise SystemExit("Suite field 'config_overrides' must be a mapping when present.")
+    merged_config = deep_merge_dicts(base_config, config_overrides)
+
+    label = str(suite.get("label", suite_name)).strip() or suite_name
+    print(f"Running suite: {label}")
+    print(f"Suite slug: {normalize_suite_slug(suite_name)}")
+    print(f"Suite file: {suite_path}")
+    print(f"Benchmarks in suite: {len(runs)}")
+    print("")
+
+    for idx, run in enumerate(runs, start=1):
+        profile_name = str(run["benchmark_profile"])
+        run_label = str(run.get("label", "")).strip()
+        print("=" * 80)
+        print(f"Suite run {idx}/{len(runs)}: {profile_name}")
+        if run_label:
+            print(f"Run label: {run_label}")
+        print("=" * 80)
+        run_benchmark(merged_config, profile_name)
+        print("")
+
+
 def main() -> None:
     load_local_env()
     args = parse_args()
     config = load_yaml_config(args.config)
+
+    if args.list_suites:
+        suite_files = discover_suite_files(args.suites_dir)
+        if not suite_files:
+            print(f"No suites found in {args.suites_dir}.")
+            return
+        rows: list[list[str]] = []
+        for suite_path in suite_files:
+            suite = load_yaml_config(str(suite_path))
+            label = str(suite.get("label", suite_path.stem)).strip() if isinstance(suite, dict) else suite_path.stem
+            description = ""
+            if isinstance(suite, dict):
+                description = str(suite.get("description", "")).strip()
+            rows.append([suite_path.stem, label, description])
+        print_table(["slug", "label", "description"], rows)
+        return
+
+    if args.describe_suite:
+        suite_path, suite = load_suite_definition(args.suites_dir, args.describe_suite)
+        print_suite_summary(args.describe_suite, suite_path, suite)
+        return
+
+    if args.suite:
+        suite_path, suite = load_suite_definition(args.suites_dir, args.suite)
+        run_suite(config, args.suite, suite_path, suite)
+        return
 
     active_config = config.get("active") or {}
     bench_root = config.get("benchmark") or {}

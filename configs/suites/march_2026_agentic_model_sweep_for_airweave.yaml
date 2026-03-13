@@ -1,0 +1,242 @@
+label: March 2026 agentic model sweep for Airweave
+description: >
+  Saved Together benchmark campaign for the Airweave evaluation pass. This suite
+  snapshots the model endpoints, workloads, and run order used for the March 2026
+  agentic-model comparison.
+tags:
+  - together
+  - airweave
+  - march-2026
+  - agentic-model-sweep
+
+config_overrides:
+  llm_profiles:
+    airweave_march_2026_glm_5_serverless:
+      provider: together
+      model: zai-org/GLM-5
+      streaming_enabled: true
+      empty_visible_stream_retries: 1
+
+    airweave_march_2026_qwen3_5_397b_serverless:
+      provider: together
+      model: Qwen/Qwen3.5-397B-A17B
+      reasoning_effort: low
+      streaming_enabled: true
+      empty_visible_stream_retries: 1
+
+    airweave_march_2026_minimax_m2_5_serverless:
+      provider: together
+      model: MiniMaxAI/MiniMax-M2.5
+      streaming_enabled: true
+      empty_visible_stream_retries: 1
+
+    airweave_march_2026_kimi_k2_5_dedicated:
+      provider: together
+      model: together_sso/moonshotai/Kimi-K2.5-070fc5a6
+      reasoning_effort: low
+      streaming_enabled: true
+      temperature: 0.6
+      empty_visible_stream_retries: 1
+
+  benchmark_profiles:
+    airweave_march_2026_glm_simple_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_glm_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 512
+      dataset_path: corpus/v1_simple_latency_probe.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_qwen_simple_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_qwen3_5_397b_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 128
+      dataset_path: corpus/v1_simple_latency_probe.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_minimax_simple_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_minimax_m2_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 128
+      dataset_path: corpus/v1_simple_latency_probe.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_kimi_simple_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_kimi_k2_5_dedicated
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 128
+      dataset_path: corpus/v1_simple_latency_probe.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_glm_grounded_extraction_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_glm_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 512
+      dataset_path: corpus/v1_grounded_extraction_ops_brief.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_qwen_grounded_extraction_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_qwen3_5_397b_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 512
+      dataset_path: corpus/v1_grounded_extraction_ops_brief.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_minimax_grounded_extraction_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_minimax_m2_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 512
+      dataset_path: corpus/v1_grounded_extraction_ops_brief.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_kimi_grounded_extraction_smoke:
+      diagnostic_mode: true
+      llm_profile: airweave_march_2026_kimi_k2_5_dedicated
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 512
+      dataset_path: corpus/v1_grounded_extraction_ops_brief.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 1
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_glm_track_a_retrieval_smoke:
+      diagnostic_mode: false
+      llm_profile: airweave_march_2026_glm_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 5000
+      dataset_path: corpus/v1_short_retrieval_qa.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 5
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_qwen_track_a_retrieval_smoke:
+      diagnostic_mode: false
+      llm_profile: airweave_march_2026_qwen3_5_397b_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 5000
+      dataset_path: corpus/v1_short_retrieval_qa.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 5
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_minimax_track_a_retrieval_smoke:
+      diagnostic_mode: false
+      llm_profile: airweave_march_2026_minimax_m2_5_serverless
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 5000
+      dataset_path: corpus/v1_short_retrieval_qa.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 5
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+    airweave_march_2026_kimi_track_a_retrieval_smoke:
+      diagnostic_mode: false
+      llm_profile: airweave_march_2026_kimi_k2_5_dedicated
+      measure_ttft: true
+      use_streaming: true
+      max_output_tokens_mode: fixed
+      max_output_tokens_fixed: 5000
+      dataset_path: corpus/v1_short_retrieval_qa.jsonl
+      sample_with_replacement: true
+      random_seed: 42
+      concurrency_levels: [1]
+      requests_per_level: 5
+      progress_update_every: 1
+      request_timeout_s: 120
+      stop_on_saturation: false
+
+runs:
+  - benchmark_profile: airweave_march_2026_glm_track_a_retrieval_smoke
+    label: GLM-5 Track A retrieval
+  - benchmark_profile: airweave_march_2026_qwen_track_a_retrieval_smoke
+    label: Qwen 3.5 397B Track A retrieval
+  - benchmark_profile: airweave_march_2026_minimax_track_a_retrieval_smoke
+    label: MiniMax M2.5 Track A retrieval
+  - benchmark_profile: airweave_march_2026_kimi_track_a_retrieval_smoke
+    label: Kimi K2.5 dedicated Track A retrieval

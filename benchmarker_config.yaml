@@ -73,17 +73,9 @@ llm_profiles:
     streaming_enabled: true
     empty_visible_stream_retries: 1
 
-  together_kimi_k2_5_serverless:
-    provider: together
-    model: moonshotai/Kimi-K2.5
-    reasoning_effort: low
-    streaming_enabled: true
-    temperature: 0.6
-    empty_visible_stream_retries: 1
-
   together_kimi_k2_5_dedicated:
     provider: together
-    model: together_sso/moonshotai/Kimi-K2.5-1b38c3da
+    model: together_sso/moonshotai/Kimi-K2.5-070fc5a6
     reasoning_effort: low
     streaming_enabled: true
     temperature: 0.6
@@ -324,39 +316,6 @@ benchmark_profiles:
     request_timeout_s: 120
     stop_on_saturation: false
 
-  together_kimi_k2_5_serverless_smoke:
-    diagnostic_mode: true
-    llm_profile: together_kimi_k2_5_serverless
-    measure_ttft: true
-    use_streaming: true
-    max_output_tokens_mode: fixed
-    max_output_tokens_fixed: 1200
-    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
-    sample_with_replacement: true
-    random_seed: 42
-    concurrency_levels: [1]
-    requests_per_level: 1
-    progress_update_every: 1
-    request_timeout_s: 120
-    stop_on_saturation: false
-
-  together_kimi_k2_5_serverless_small:
-    diagnostic_mode: false
-    llm_profile: together_kimi_k2_5_serverless
-    measure_ttft: true
-    use_streaming: true
-    max_output_tokens_mode: fixed
-    max_output_tokens_fixed: 1200
-    dataset_path: corpus/v1_summarization_13000to600_non_strict.jsonl
-    sample_with_replacement: true
-    random_seed: 42
-    concurrency_levels: [1]
-    requests_per_level: 2
-    request_spacing_s: 25
-    progress_update_every: 1
-    request_timeout_s: 120
-    stop_on_saturation: false
-
   together_qwen3_5_397b_serverless_smoke:
     diagnostic_mode: true
     llm_profile: together_qwen3_5_397b_serverless
@@ -430,22 +389,6 @@ benchmark_profiles:
     use_streaming: true
     max_output_tokens_mode: fixed
     max_output_tokens_fixed: 512
-    dataset_path: corpus/v1_simple_latency_probe.jsonl
-    sample_with_replacement: true
-    random_seed: 42
-    concurrency_levels: [1]
-    requests_per_level: 1
-    progress_update_every: 1
-    request_timeout_s: 120
-    stop_on_saturation: false
-
-  together_kimi_k2_5_serverless_simple_smoke:
-    diagnostic_mode: true
-    llm_profile: together_kimi_k2_5_serverless
-    measure_ttft: true
-    use_streaming: true
-    max_output_tokens_mode: fixed
-    max_output_tokens_fixed: 128
     dataset_path: corpus/v1_simple_latency_probe.jsonl
     sample_with_replacement: true
     random_seed: 42
@@ -634,22 +577,6 @@ benchmark_profiles:
   together_qwen3_5_397b_serverless_track_a_retrieval_smoke:
     diagnostic_mode: true
     llm_profile: together_qwen3_5_397b_serverless
-    measure_ttft: true
-    use_streaming: true
-    max_output_tokens_mode: fixed
-    max_output_tokens_fixed: 5000
-    dataset_path: corpus/v1_short_retrieval_qa.jsonl
-    sample_with_replacement: true
-    random_seed: 42
-    concurrency_levels: [1]
-    requests_per_level: 1
-    progress_update_every: 1
-    request_timeout_s: 120
-    stop_on_saturation: false
-
-  together_kimi_k2_5_serverless_track_a_retrieval_smoke:
-    diagnostic_mode: true
-    llm_profile: together_kimi_k2_5_serverless
     measure_ttft: true
     use_streaming: true
     max_output_tokens_mode: fixed
