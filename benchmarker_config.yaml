@@ -81,6 +81,14 @@ llm_profiles:
     temperature: 0.6
     empty_visible_stream_retries: 1
 
+  together_kimi_k2_5_dedicated:
+    provider: together
+    model: together_sso/moonshotai/Kimi-K2.5-1b38c3da
+    reasoning_effort: low
+    streaming_enabled: true
+    temperature: 0.6
+    empty_visible_stream_retries: 1
+
   together_qwen3_5_397b_serverless:
     provider: together
     model: Qwen/Qwen3.5-397B-A17B
@@ -626,6 +634,38 @@ benchmark_profiles:
   together_qwen3_5_397b_serverless_track_a_retrieval_smoke:
     diagnostic_mode: true
     llm_profile: together_qwen3_5_397b_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 5000
+    dataset_path: corpus/v1_short_retrieval_qa.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_kimi_k2_5_serverless_track_a_retrieval_smoke:
+    diagnostic_mode: true
+    llm_profile: together_kimi_k2_5_serverless
+    measure_ttft: true
+    use_streaming: true
+    max_output_tokens_mode: fixed
+    max_output_tokens_fixed: 5000
+    dataset_path: corpus/v1_short_retrieval_qa.jsonl
+    sample_with_replacement: true
+    random_seed: 42
+    concurrency_levels: [1]
+    requests_per_level: 1
+    progress_update_every: 1
+    request_timeout_s: 120
+    stop_on_saturation: false
+
+  together_kimi_k2_5_dedicated_track_a_retrieval_smoke:
+    diagnostic_mode: true
+    llm_profile: together_kimi_k2_5_dedicated
     measure_ttft: true
     use_streaming: true
     max_output_tokens_mode: fixed
