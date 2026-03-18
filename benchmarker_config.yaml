@@ -67,7 +67,42 @@ llm_profiles:
     provider: together
     model: together_sso/Qwen/Qwen3.5-397B-A17B-FP8-e2314544
 
+benchmark_suites:
+  together_serverless_image_gen_latency_v1:
+    kind: image_generation
+    provider: together
+    request_timeout_s: 180
+    defaults:
+      prompt: "A premium product photo of a ceramic coffee mug on a wooden table, soft natural window light, clean background, high detail."
+      width: 1024
+      height: 1024
+      n: 1
+      response_format: url
+    cases:
+      flux_2_pro:
+        model: black-forest-labs/FLUX.2-pro
+      qwen_image_2_0:
+        model: Qwen/Qwen-Image-2.0
+      gpt_image_1_5:
+        model: openai/gpt-image-1.5
+      seedream_4_0:
+        model: ByteDance-Seed/Seedream-4.0
+      ideogram_3_0:
+        model: ideogram/ideogram-3.0
+
 benchmark_profiles:
+  together_image_gen_latency_smoke:
+    suite: together_serverless_image_gen_latency_v1
+    repeats_per_case: 1
+    request_timeout_s: 180
+    fail_on_any_error: true
+
+  together_image_gen_latency_rough:
+    suite: together_serverless_image_gen_latency_v1
+    repeats_per_case: 3
+    request_timeout_s: 180
+    fail_on_any_error: true
+
   summarization_4000to100_non_strict_smoke_dedicated_1xh100_low:
     diagnostic_mode: false
     llm_profile: together_gpt-oss-20b_dedicated_1xh100_low

@@ -5,6 +5,7 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
@@ -31,6 +32,30 @@ DEFAULT_PROVIDERS = {
         "api_style": "chat_completions",
     },
 }
+
+
+@dataclass(frozen=True)
+class ImageBenchmarkCase:
+    name: str
+    model: str
+    prompt: str
+    width: int
+    height: int
+    n: int = 1
+    response_format: str = "url"
+    output_format: str | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BenchmarkSuite:
+    name: str
+    kind: str
+    provider_name: str
+    base_url: str
+    api_key_env: str
+    request_timeout_s: float
+    cases: list[ImageBenchmarkCase]
 
 
 def load_local_env(path: str = ".env") -> None:
@@ -473,6 +498,114 @@ def resolve_llm_settings(config: dict[str, Any], llm_profile_name: str) -> dict[
     }
 
 
+def resolve_provider_settings(config: dict[str, Any], provider_name: str) -> dict[str, str]:
+    providers = {**DEFAULT_PROVIDERS, **(config.get("providers") or {})}
+    provider = providers.get(provider_name)
+    if not provider:
+        raise SystemExit(f"Provider '{provider_name}' not found in config.")
+
+    base_url = provider.get("base_url")
+    api_key_env = provider.get("api_key_env")
+    if not base_url or not api_key_env:
+        raise SystemExit(
+            f"Provider '{provider_name}' is missing required setting(s): base_url/api_key_env."
+        )
+
+    return {
+        "provider_name": provider_name,
+        "base_url": str(base_url),
+        "api_key_env": str(api_key_env),
+    }
+
+
+def resolve_benchmark_suite(
+    config: dict[str, Any],
+    suite_name: str,
+    profile: dict[str, Any],
+) -> BenchmarkSuite:
+    suites = config.get("benchmark_suites") or {}
+    suite_cfg = suites.get(suite_name)
+    if not suite_cfg:
+        raise SystemExit(f"Benchmark suite '{suite_name}' not found in config.")
+
+    kind = str(suite_cfg.get("kind", "image_generation")).strip().lower()
+    if kind != "image_generation":
+        raise SystemExit(f"Unsupported benchmark suite kind: {kind!r}")
+
+    provider_name = str(suite_cfg.get("provider", "")).strip()
+    if not provider_name:
+        raise SystemExit(f"Benchmark suite '{suite_name}' is missing provider.")
+    provider = resolve_provider_settings(config, provider_name)
+
+    defaults = suite_cfg.get("defaults") or {}
+    cases_cfg = suite_cfg.get("cases") or {}
+    if not isinstance(cases_cfg, dict) or not cases_cfg:
+        raise SystemExit(f"Benchmark suite '{suite_name}' must define at least one case.")
+
+    cases: list[ImageBenchmarkCase] = []
+    for case_name, raw_case_cfg in cases_cfg.items():
+        case_cfg = raw_case_cfg or {}
+        if not isinstance(case_cfg, dict):
+            raise SystemExit(
+                f"Benchmark suite '{suite_name}' case '{case_name}' must be a mapping."
+            )
+        merged = {**defaults, **case_cfg}
+        model = str(merged.get("model", "")).strip()
+        prompt = str(merged.get("prompt", "")).strip()
+        width = int(merged.get("width", 0) or 0)
+        height = int(merged.get("height", 0) or 0)
+        n = int(merged.get("n", 1) or 1)
+        response_format = str(merged.get("response_format", "url")).strip() or "url"
+        output_format_raw = merged.get("output_format")
+        output_format = str(output_format_raw).strip() if output_format_raw else None
+        extra_body = dict(merged.get("extra_body") or {})
+
+        missing_fields: list[str] = []
+        if not model:
+            missing_fields.append("model")
+        if not prompt:
+            missing_fields.append("prompt")
+        if width <= 0:
+            missing_fields.append("width")
+        if height <= 0:
+            missing_fields.append("height")
+        if n <= 0:
+            missing_fields.append("n")
+        if missing_fields:
+            raise SystemExit(
+                f"Benchmark suite '{suite_name}' case '{case_name}' is missing/invalid: "
+                f"{', '.join(missing_fields)}."
+            )
+
+        cases.append(
+            ImageBenchmarkCase(
+                name=str(case_name),
+                model=model,
+                prompt=prompt,
+                width=width,
+                height=height,
+                n=n,
+                response_format=response_format,
+                output_format=output_format,
+                extra_body=extra_body,
+            )
+        )
+
+    request_timeout_s = float(
+        profile.get("request_timeout_s", suite_cfg.get("request_timeout_s", 180))
+    )
+
+    return BenchmarkSuite(
+        name=suite_name,
+        kind=kind,
+        provider_name=provider["provider_name"],
+        base_url=provider["base_url"],
+        api_key_env=provider["api_key_env"],
+        request_timeout_s=request_timeout_s,
+        cases=cases,
+    )
+
+
 def read_corpus(path: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -713,6 +846,82 @@ def summarize_level(concurrency: int, elapsed_s: float, results: list[dict[str, 
     }
 
 
+def single_image_request(
+    client: OpenAI,
+    case: ImageBenchmarkCase,
+    timeout_s: float,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    try:
+        request_kwargs: dict[str, Any] = {
+            "model": case.model,
+            "prompt": case.prompt,
+            "n": case.n,
+            "response_format": case.response_format,
+            "timeout": timeout_s,
+            "extra_body": {
+                "width": case.width,
+                "height": case.height,
+                **case.extra_body,
+            },
+        }
+        if case.output_format:
+            request_kwargs["output_format"] = case.output_format
+
+        response = client.images.generate(**request_kwargs)
+        latency = time.perf_counter() - start
+
+        image_items = getattr(response, "data", None) or []
+        first_item = image_items[0] if image_items else None
+        if isinstance(first_item, dict):
+            image_url = first_item.get("url")
+            b64_json = first_item.get("b64_json")
+        else:
+            image_url = getattr(first_item, "url", None)
+            b64_json = getattr(first_item, "b64_json", None)
+
+        if image_url:
+            image_ref = str(image_url)
+        elif b64_json:
+            image_ref = "<b64_json>"
+        else:
+            image_ref = ""
+
+        return {
+            "ok": True,
+            "latency_s": latency,
+            "image_ref": image_ref,
+            "response_created": getattr(response, "created", None),
+        }
+    except Exception as exc:  # noqa: BLE001
+        latency = time.perf_counter() - start
+        return {
+            "ok": False,
+            "latency_s": latency,
+            "error": str(exc),
+        }
+
+
+def summarize_image_case(case: ImageBenchmarkCase, results: list[dict[str, Any]]) -> dict[str, Any]:
+    successes = [r for r in results if r.get("ok")]
+    errors = [r for r in results if not r.get("ok")]
+    latencies = [float(r["latency_s"]) for r in successes]
+    first_image_ref = next((str(r.get("image_ref", "")) for r in successes if r.get("image_ref")), "")
+    return {
+        "case_name": case.name,
+        "model": case.model,
+        "attempts": len(results),
+        "successes": len(successes),
+        "errors": len(errors),
+        "success_rate": (len(successes) / len(results)) if results else 0.0,
+        "lat_avg": mean(latencies) if latencies else 0.0,
+        "lat_p50": percentile(latencies, 0.50),
+        "lat_p95": percentile(latencies, 0.95),
+        "first_image_ref": first_image_ref,
+        "error_examples": [str(err.get("error", "")) for err in errors[:3]],
+    }
+
+
 def detect_saturation(
     history: list[dict[str, Any]],
     current: dict[str, Any],
@@ -742,6 +951,127 @@ def detect_saturation(
     return False, ""
 
 
+def run_image_generation_suite(
+    config: dict[str, Any],
+    benchmark_profile_name: str,
+    profile: dict[str, Any],
+) -> None:
+    suite_name = str(profile.get("suite", "")).strip()
+    if not suite_name:
+        raise SystemExit(
+            f"Benchmark profile '{benchmark_profile_name}' is missing suite reference."
+        )
+
+    suite = resolve_benchmark_suite(config, suite_name, profile)
+    repeats_per_case = int(profile.get("repeats_per_case", 1))
+    random_seed = int(profile.get("random_seed", 0))
+    fail_on_any_error = bool(profile.get("fail_on_any_error", False))
+    shuffle_cases = bool(profile.get("shuffle_cases", False))
+
+    if repeats_per_case <= 0:
+        raise SystemExit("repeats_per_case must be > 0.")
+
+    api_key = os.getenv(suite.api_key_env)
+    if not api_key:
+        raise SystemExit(f"{suite.api_key_env} is not set (env var or .env).")
+
+    client = OpenAI(api_key=api_key, base_url=suite.base_url)
+    cases = list(suite.cases)
+    if shuffle_cases:
+        rng = random.Random(random_seed)
+        rng.shuffle(cases)
+
+    print("Starting benchmark suite...")
+    print(f"Benchmark profile: {benchmark_profile_name}")
+    print(f"Suite: {suite.name}")
+    print(f"Kind: {suite.kind}")
+    print(f"Provider: {suite.provider_name}")
+    print(f"Cases: {len(cases)}")
+    print(f"Repeats per case: {repeats_per_case}")
+    print(f"Timeout per request: {suite.request_timeout_s:.1f}s")
+    print("")
+
+    case_summaries: list[dict[str, Any]] = []
+    for case_idx, case in enumerate(cases, start=1):
+        print(f"[Case {case_idx}/{len(cases)}] {case.name} -> {case.model}")
+        print(
+            "  "
+            f"prompt={case.prompt!r}, "
+            f"size={case.width}x{case.height}, "
+            f"n={case.n}, "
+            f"response_format={case.response_format}"
+        )
+        results: list[dict[str, Any]] = []
+        for attempt in range(1, repeats_per_case + 1):
+            result = single_image_request(client, case, suite.request_timeout_s)
+            results.append(result)
+            if result.get("ok"):
+                image_ref = str(result.get("image_ref", ""))
+                if len(image_ref) > 96:
+                    image_ref = image_ref[:93] + "..."
+                print(
+                    "  "
+                    f"run {attempt}/{repeats_per_case}: ok "
+                    f"lat={float(result.get('latency_s', 0.0)):.2f}s "
+                    f"image_ref={image_ref or '-'}"
+                )
+            else:
+                print(
+                    "  "
+                    f"run {attempt}/{repeats_per_case}: err "
+                    f"lat={float(result.get('latency_s', 0.0)):.2f}s "
+                    f"error={result.get('error', '')}"
+                )
+
+        summary = summarize_image_case(case, results)
+        case_summaries.append(summary)
+        print("  case summary:")
+        print_table(
+            ["attempts", "success", "lat_avg_s", "lat_p50_s", "lat_p95_s"],
+            [[
+                str(summary["attempts"]),
+                f"{summary['successes']}/{summary['attempts']}",
+                f"{summary['lat_avg']:.2f}",
+                f"{summary['lat_p50']:.2f}",
+                f"{summary['lat_p95']:.2f}",
+            ]],
+            indent="  ",
+        )
+        if summary["error_examples"]:
+            print(f"  sample_error: {summary['error_examples'][0]}")
+        print("")
+
+    print("\nFinal suite summary:")
+    summary_rows: list[list[str]] = []
+    for item in case_summaries:
+        summary_rows.append(
+            [
+                str(item["case_name"]),
+                str(item["model"]),
+                f"{item['successes']}/{item['attempts']}",
+                f"{item['lat_avg']:.2f}",
+                f"{item['lat_p50']:.2f}",
+                f"{item['lat_p95']:.2f}",
+                f"{item['success_rate'] * 100:.1f}%",
+            ]
+        )
+    print_table(
+        ["case", "model", "success", "lat_avg_s", "lat_p50_s", "lat_p95_s", "success_rate"],
+        summary_rows,
+    )
+
+    failed_cases = [item for item in case_summaries if item["errors"] > 0]
+    if failed_cases:
+        print(
+            "\nSuite completed with failures: "
+            + ", ".join(str(item["case_name"]) for item in failed_cases)
+        )
+        if fail_on_any_error:
+            raise SystemExit(
+                f"Benchmark suite '{suite.name}' had {len(failed_cases)} failing case(s)."
+            )
+
+
 def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     active_config = config.get("active") or {}
     benchmark_root = config.get("benchmark") or {}
@@ -749,6 +1079,10 @@ def run_benchmark(config: dict[str, Any], benchmark_profile_name: str) -> None:
     profile = benchmark_profiles.get(benchmark_profile_name)
     if not profile:
         raise SystemExit(f"Benchmark profile '{benchmark_profile_name}' not found in config.")
+
+    if profile.get("suite"):
+        run_image_generation_suite(config, benchmark_profile_name, profile)
+        return
 
     llm_profile_name = (
         profile.get("llm_profile")

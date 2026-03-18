@@ -1,0 +1,59 @@
+{
+  "report_date": "March 18, 2026",
+  "title": "Together Serverless Image Generation Latency Benchmark",
+  "prompt": "A premium product photo of a ceramic coffee mug on a wooden table, soft natural window light, clean background, high detail.",
+  "settings": {
+    "width": 1024,
+    "height": 1024,
+    "n": 1,
+    "response_format": "url",
+    "steps": null
+  },
+  "results": [
+    {
+      "rank": 1,
+      "display_name": "Qwen Image 2.0",
+      "model": "Qwen/Qwen-Image-2.0",
+      "avg_s": 7.53,
+      "p50_s": 7.19,
+      "p95_s": 9.27,
+      "success": "3/3"
+    },
+    {
+      "rank": 2,
+      "display_name": "Seedream 4.0",
+      "model": "ByteDance-Seed/Seedream-4.0",
+      "avg_s": 8.4,
+      "p50_s": 8.08,
+      "p95_s": 9.01,
+      "success": "3/3"
+    },
+    {
+      "rank": 3,
+      "display_name": "Ideogram 3.0",
+      "model": "ideogram/ideogram-3.0",
+      "avg_s": 8.67,
+      "p50_s": 8.69,
+      "p95_s": 8.71,
+      "success": "3/3"
+    },
+    {
+      "rank": 4,
+      "display_name": "FLUX.2 Pro",
+      "model": "black-forest-labs/FLUX.2-pro",
+      "avg_s": 11.88,
+      "p50_s": 11.39,
+      "p95_s": 12.87,
+      "success": "3/3"
+    },
+    {
+      "rank": 5,
+      "display_name": "GPT Image 1.5",
+      "model": "openai/gpt-image-1.5",
+      "avg_s": 21.55,
+      "p50_s": 22.2,
+      "p95_s": 24.47,
+      "success": "3/3"
+    }
+  ]
+}
